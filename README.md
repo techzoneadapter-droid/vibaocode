@@ -92,3 +92,10 @@ Do not commit access tokens or AI provider keys.
 - Browser play testing skips controls with destructive labels such as delete, purchase, logout, or reset.
 
 See `PROJECT.md` for current limitations and roadmap.
+
+
+## Cloud runtime
+- Run automatically installs project dependencies and starts the development server in a persistent Vercel Sandbox.
+- ChatGPT/Codex login automatically installs and caches the official Codex CLI, then shows the device authorization code in Settings.
+- Auto Test runs typecheck/lint/test/build when available plus an HTTP smoke test.
+- AI Play uses a cached Chromium/Playwright runner, captures live frames, clicks safe UI controls and performs drag gestures on canvas games.
