@@ -2301,3 +2301,61 @@ button:disabled {
   width: 100%;
   margin-bottom: 10px;
 }
+
+
+/* Codex device authorization */
+.codex-device-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(69, 211, 166, 0.28);
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(20, 53, 46, 0.9), rgba(13, 26, 31, 0.94));
+}
+
+.codex-device-card > span:not(.eyebrow) {
+  color: #91a6aa;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.codex-device-code {
+  width: fit-content;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #071411;
+  border: 1px solid rgba(96, 226, 181, 0.35);
+  color: #baf9df;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+}
+
+.codex-device-card .primary-button {
+  text-decoration: none;
+}
+
+.codex-auth-detail {
+  border: 1px solid #263a40;
+  border-radius: 10px;
+  background: #0b1519;
+  overflow: hidden;
+}
+
+.codex-auth-detail summary {
+  cursor: pointer;
+  padding: 9px 11px;
+  color: #7f989f;
+  font-size: 11px;
+}
+
+.codex-auth-detail pre {
+  margin: 0;
+  padding: 10px 11px;
+  max-height: 150px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: #8ca5aa;
+  font-size: 10px;
+  line-height: 1.45;
+}
