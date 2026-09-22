@@ -50,6 +50,20 @@ type FileState = {
   size: number;
 };
 
+type GithubRepoOption = {
+  fullName: string;
+  name: string;
+  private: boolean;
+  defaultBranch: string;
+  updatedAt: string;
+};
+
+type GithubUser = {
+  login: string;
+  name: string;
+  avatarUrl: string;
+};
+
 type Device = {
   label: string;
   width: number;
@@ -217,6 +231,9 @@ export default function Workspace() {
   const [repo, setRepo] = useState("techzoneadapter-droid/vibaocode");
   const [branch, setBranch] = useState("main");
   const [githubToken, setGithubToken] = useState("");
+  const [githubUser, setGithubUser] = useState<GithubUser | null>(null);
+  const [githubRepos, setGithubRepos] = useState<GithubRepoOption[]>([]);
+  const [githubConnecting, setGithubConnecting] = useState(false);
   const [openAIKey, setOpenAIKey] = useState("");
   const [model, setModel] = useState("gpt-5.3-codex");
   const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api">("openai-api");
@@ -288,7 +305,10 @@ export default function Workspace() {
       const data = JSON.parse(saved);
       if (data.repo) setRepo(data.repo);
       if (data.branch) setBranch(data.branch);
-      if (data.githubToken) setGithubToken(data.githubToken);
+      if (data.githubToken) {
+        setGithubToken(data.githubToken);
+        void loadGithubAccount(data.githubToken, false);
+      }
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
       if (data.model) setModel(data.model);
       if (["codex-account","openai-api","claude-api","gemini-api"].includes(data.aiProvider)) {
@@ -332,6 +352,81 @@ export default function Workspace() {
     if (githubToken) headers["x-github-token"] = githubToken;
     return headers;
   };
+
+  async function loadGithubAccount(token = githubToken, announce = true) {
+    if (!token) {
+      if (announce) setError("Nhập Fine-grained GitHub token trước.");
+      return false;
+    }
+
+    setGithubConnecting(true);
+    if (announce) {
+      setError("");
+      setNotice("Đang kết nối GitHub…");
+    }
+
+    try {
+      const response = await fetch("/api/github/account", {
+        headers: { "x-github-token": token },
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không kết nối được GitHub.");
+
+      setGithubUser(data.user || null);
+      setGithubRepos(data.repos || []);
+      if (announce) {
+        setNotice(`Đã kết nối GitHub @${data.user?.login || ""} • ${data.repos?.length || 0} repositories`);
+      }
+      return true;
+    } catch (err) {
+      setGithubUser(null);
+      setGithubRepos([]);
+      if (announce) {
+        setError(err instanceof Error ? err.message : "Không kết nối được GitHub.");
+        setNotice("Kết nối GitHub thất bại");
+      }
+      return false;
+    } finally {
+      setGithubConnecting(false);
+    }
+  }
+
+  function chooseGithubRepo(fullName: string) {
+    const option = githubRepos.find((item) => item.fullName === fullName);
+    setRepo(fullName);
+    setBranch(option?.defaultBranch || "main");
+    setReviewBase("");
+    setPrUrl("");
+    setTreeItems([]);
+    setSelected(null);
+    setEditorContent("");
+    setOriginalContent("");
+    setProposal("");
+    setProposalSummary("");
+    setProjectProposals([]);
+    setProjectSummary("");
+    setProjectPlan("");
+    setSandboxRunning(false);
+    setPreviewUrl("");
+    setNotice(`Đã chọn ${fullName}. Bấm Load để mở dự án.`);
+  }
+
+  function disconnectGithub() {
+    setGithubToken("");
+    setGithubUser(null);
+    setGithubRepos([]);
+    const saved = sessionStorage.getItem("vibaocode.settings");
+    if (saved) {
+      try {
+        const data = JSON.parse(saved);
+        delete data.githubToken;
+        sessionStorage.setItem("vibaocode.settings", JSON.stringify(data));
+      } catch {
+        // Ignore malformed session data.
+      }
+    }
+    setNotice("Đã ngắt kết nối GitHub");
+  }
 
   async function fetchFile(path: string) {
     const query = new URLSearchParams({ repo, branch, path });
@@ -1041,7 +1136,41 @@ export default function Workspace() {
           </div>
 
           <div className="repo-quick">
-            <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
+            {githubUser ? (
+              <>
+                <div className="github-account-mini">
+                  {githubUser.avatarUrl ? <img src={githubUser.avatarUrl} alt="" /> : <Github size={17} />}
+                  <div>
+                    <strong>{githubUser.name}</strong>
+                    <span>@{githubUser.login}</span>
+                  </div>
+                  <button className="icon-button small" onClick={() => setSettingsOpen(true)} title="GitHub settings" type="button">
+                    <Settings size={14} />
+                  </button>
+                </div>
+                <label className="repo-select-label">
+                  <span>Dự án</span>
+                  <select value={repo} onChange={(e) => chooseGithubRepo(e.target.value)}>
+                    {!githubRepos.some((item) => item.fullName === repo) ? (
+                      <option value={repo}>{repo}</option>
+                    ) : null}
+                    {githubRepos.map((item) => (
+                      <option key={item.fullName} value={item.fullName}>
+                        {item.name}{item.private ? " • private" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : (
+              <>
+                <button className="github-connect-button" onClick={() => setSettingsOpen(true)} type="button">
+                  <Github size={16} />
+                  Kết nối GitHub
+                </button>
+                <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
+              </>
+            )}
             <div className="repo-quick-row">
               <input
                 value={branch}
@@ -1585,10 +1714,58 @@ export default function Workspace() {
 
             <div className="settings-group">
               <div className="settings-title"><Github size={17} /><strong>GitHub</strong></div>
+
+              {githubUser ? (
+                <div className="github-account-card">
+                  {githubUser.avatarUrl ? <img src={githubUser.avatarUrl} alt="" /> : <Github size={24} />}
+                  <div>
+                    <strong>{githubUser.name}</strong>
+                    <span>@{githubUser.login} • {githubRepos.length} repositories</span>
+                  </div>
+                  <button className="ghost-button" onClick={disconnectGithub} type="button">Ngắt</button>
+                </div>
+              ) : null}
+
               <label>
-                Repository
-                <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repository" />
+                Fine-grained token <span>(dùng để kết nối GitHub, repo private và Push)</span>
+                <input
+                  type="password"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder="github_pat_…"
+                  autoComplete="off"
+                />
               </label>
+
+              <button
+                className="primary-button github-login-action"
+                onClick={() => loadGithubAccount()}
+                disabled={!githubToken || githubConnecting}
+                type="button"
+              >
+                {githubConnecting ? <Loader2 className="spin" size={14} /> : <Github size={14} />}
+                {githubUser ? "Làm mới danh sách dự án" : "Kết nối GitHub"}
+              </button>
+
+              {githubRepos.length ? (
+                <label>
+                  Dự án
+                  <select value={repo} onChange={(e) => chooseGithubRepo(e.target.value)}>
+                    {!githubRepos.some((item) => item.fullName === repo) ? <option value={repo}>{repo}</option> : null}
+                    {githubRepos.map((item) => (
+                      <option key={item.fullName} value={item.fullName}>
+                        {item.fullName}{item.private ? " • private" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label>
+                  Repository
+                  <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repository" />
+                </label>
+              )}
+
               <label>
                 Branch
                 <input
@@ -1601,16 +1778,10 @@ export default function Workspace() {
                   placeholder="main"
                 />
               </label>
-              <label>
-                Fine-grained token <span>(chỉ cần khi push/private repo)</span>
-                <input
-                  type="password"
-                  value={githubToken}
-                  onChange={(e) => setGithubToken(e.target.value)}
-                  placeholder="github_pat_…"
-                  autoComplete="off"
-                />
-              </label>
+
+              <p className="settings-hint">
+                Vibaocode không nhận mật khẩu GitHub. Dùng Fine-grained token để đăng nhập an toàn hơn; sau khi kết nối, ô Dự án sẽ thành danh sách thả xuống.
+              </p>
             </div>
 
             <div className="settings-group">
