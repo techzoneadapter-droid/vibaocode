@@ -57,6 +57,81 @@ export async function shell(
   return run(sandbox, "bash", ["-lc", command]);
 }
 
+export async function ensureCodexCli(sandbox: Sandbox) {
+  const toolsDir = "/vercel/sandbox/.vibaocode-tools/codex";
+  const bin = `${toolsDir}/node_modules/.bin/codex`;
+  const setup = await shell(
+    sandbox,
+    `
+set -e
+mkdir -p ${JSON.stringify(toolsDir)}
+cd ${JSON.stringify(toolsDir)}
+if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
+if [ ! -x node_modules/.bin/codex ]; then
+  npm install --no-audit --no-fund @openai/codex@latest >/tmp/vibaocode-codex-install.log 2>&1
+fi
+node_modules/.bin/codex --version
+`,
+  );
+
+  if (setup.exitCode !== 0) {
+    const log = await shell(
+      sandbox,
+      "tail -n 120 /tmp/vibaocode-codex-install.log 2>/dev/null || true",
+    );
+    throw new Error(
+      `Không cài được Codex CLI trong Cloud Sandbox.\n${log.stdout || setup.stderr || setup.stdout}`,
+    );
+  }
+
+  return {
+    bin,
+    version: setup.stdout.trim().split("\n").pop() || "codex",
+    codexHome: "/vercel/sandbox/.codex",
+  };
+}
+
+export async function ensureBrowserTester(sandbox: Sandbox) {
+  const toolsDir = "/vercel/sandbox/.vibaocode-tools";
+  const setup = await shell(
+    sandbox,
+    `
+set -e
+mkdir -p ${JSON.stringify(toolsDir)}
+cd ${JSON.stringify(toolsDir)}
+if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
+if [ ! -d node_modules/playwright ]; then
+  npm install --no-audit --no-fund playwright@latest >/tmp/vibaocode-playwright-npm.log 2>&1
+fi
+if [ ! -f .chromium-ready ]; then
+  if npx playwright install chromium >/tmp/vibaocode-playwright-install.log 2>&1; then
+    touch .chromium-ready
+  else
+    npx playwright install --with-deps chromium >>/tmp/vibaocode-playwright-install.log 2>&1
+    touch .chromium-ready
+  fi
+fi
+node -e 'const { chromium } = require("playwright"); console.log(chromium.executablePath())'
+`,
+  );
+
+  if (setup.exitCode !== 0) {
+    const npmLog = await shell(
+      sandbox,
+      "tail -n 100 /tmp/vibaocode-playwright-npm.log 2>/dev/null || true",
+    );
+    const installLog = await shell(
+      sandbox,
+      "tail -n 160 /tmp/vibaocode-playwright-install.log 2>/dev/null || true",
+    );
+    throw new Error(
+      `Không chuẩn bị được Chromium tester.\n${installLog.stdout || npmLog.stdout || setup.stderr || setup.stdout}`,
+    );
+  }
+
+  return toolsDir;
+}
+
 export function validRepo(repo: string) {
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo);
 }
@@ -254,6 +329,7 @@ export async function runProjectChecks(
 ) {
   const info = await packageInfo(sandbox, dir);
   const scripts = info.scripts || {};
+  const deps = info.deps || {};
   const checks: Array<{
     name: string;
     exitCode: number;
@@ -261,13 +337,35 @@ export async function runProjectChecks(
     stderr: string;
   }> = [];
 
-  for (const name of ["lint", "test", "build"]) {
+  for (const name of ["lint", "test", "typecheck", "build"]) {
     if (!scripts[name]) continue;
     const result = await shell(
       sandbox,
       `cd ${JSON.stringify(dir)} && npm run ${name}`,
     );
     checks.push({ name, ...result });
+  }
+
+  if (!scripts.typecheck && deps.typescript) {
+    const hasTsConfig = await shell(
+      sandbox,
+      `test -f ${JSON.stringify(dir + "/tsconfig.json")} && echo yes || true`,
+    );
+    if (hasTsConfig.stdout.includes("yes")) {
+      const result = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && npx tsc --noEmit`,
+      );
+      checks.push({ name: "typecheck", ...result });
+    }
+  }
+
+  if (!checks.length) {
+    const syntax = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git status --short && echo "No package test scripts; smoke test only."`,
+    );
+    checks.push({ name: "workspace", ...syntax });
   }
 
   const smoke = await shell(
