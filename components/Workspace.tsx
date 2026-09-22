@@ -229,6 +229,12 @@ export default function Workspace() {
   const [testSummary, setTestSummary] = useState("");
   const [runLoading, setRunLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [playTestLoading, setPlayTestLoading] = useState(false);
+  const [playScreenshots, setPlayScreenshots] = useState<string[]>([]);
+  const [playStep, setPlayStep] = useState(0);
+  const [playReport, setPlayReport] = useState("");
+  const [visualReview, setVisualReview] = useState("");
+  const [previewView, setPreviewView] = useState<"live" | "replay">("live");
   const [autoSync, setAutoSync] = useState(true);
   const [codexStatus, setCodexStatus] = useState<"disconnected" | "waiting" | "connected">("disconnected");
   const [codexVerificationUrl, setCodexVerificationUrl] = useState("");
@@ -505,6 +511,57 @@ export default function Workspace() {
       setNotice("Tester gặp lỗi");
     } finally {
       setTestLoading(false);
+    }
+  }
+
+  async function playTestProject() {
+    if (!workspaceId || !treeItems.length) {
+      setError("Hãy Load repository trước khi play test.");
+      return;
+    }
+    setPlayTestLoading(true);
+    setError("");
+    setNotice("Browser Tester đang mở app và tự thao tác thử…");
+    try {
+      const response = await fetch("/api/sandbox/playtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          repo,
+          branch,
+          apiKey: openAIKey,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.detail || "Play test failed.");
+
+      if (data.previewUrl) {
+        setPreviewUrl(data.previewUrl);
+        setSandboxRunning(true);
+      }
+      const shots = Array.isArray(data.screenshots) ? data.screenshots : [];
+      setPlayScreenshots(shots);
+      setPlayStep(Math.max(0, shots.length - 1));
+      setPreviewView(shots.length ? "replay" : "live");
+      const report = data.report || {};
+      setPlayReport(
+        [
+          `Trang: ${report.title || "(không có title)"}`,
+          `Actions: ${(report.actions || []).length}`,
+          `Console errors: ${(report.consoleErrors || []).length}`,
+          `Page errors: ${(report.pageErrors || []).length}`,
+          ...(report.consoleErrors || []).slice(0, 6).map((item: string) => `console: ${item}`),
+          ...(report.pageErrors || []).slice(0, 6).map((item: string) => `page: ${item}`),
+        ].join("\n")
+      );
+      setVisualReview(data.visualReview || "");
+      setNotice("AI Play Test đã hoàn tất — xem Test Replay");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Play test failed.");
+      setNotice("AI Play Test gặp lỗi");
+    } finally {
+      setPlayTestLoading(false);
     }
   }
 
@@ -969,6 +1026,15 @@ export default function Workspace() {
                 {testLoading ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
                 Auto Test
               </button>
+              <button
+                className="ghost-button"
+                onClick={playTestProject}
+                disabled={!treeItems.length || playTestLoading}
+                type="button"
+              >
+                {playTestLoading ? <Loader2 className="spin" size={14} /> : <Bot size={14} />}
+                AI Play Test
+              </button>
               <button className="ghost-button" onClick={undoDraft} disabled={!dirty && !proposal} type="button">
                 <RotateCcw size={14} /> Undo
               </button>
@@ -1134,6 +1200,24 @@ export default function Workspace() {
             <div className="device-label">
               <MonitorSmartphone size={14} />
               {device.width} × {device.height}
+              {playScreenshots.length ? (
+                <span className="preview-view-toggle">
+                  <button
+                    className={previewView === "live" ? "active" : ""}
+                    onClick={() => setPreviewView("live")}
+                    type="button"
+                  >
+                    LIVE
+                  </button>
+                  <button
+                    className={previewView === "replay" ? "active" : ""}
+                    onClick={() => setPreviewView("replay")}
+                    type="button"
+                  >
+                    TEST REPLAY
+                  </button>
+                </span>
+              ) : null}
             </div>
 
             <div
@@ -1141,7 +1225,13 @@ export default function Workspace() {
               style={{ aspectRatio: `${device.width} / ${device.height}` }}
             >
               <div className="phone-speaker" />
-              {previewMode === "html" && htmlPreview ? (
+              {previewView === "replay" && playScreenshots.length ? (
+                <img
+                  className="replay-image"
+                  src={playScreenshots[Math.min(playStep, playScreenshots.length - 1)]}
+                  alt={`Play test step ${playStep + 1}`}
+                />
+              ) : previewMode === "html" && htmlPreview ? (
                 <iframe key={`html-${previewKey}`} title="HTML preview" srcDoc={htmlPreview} />
               ) : previewUrl ? (
                 <iframe key={`url-${previewKey}`} title="Mobile preview" src={previewUrl} />
@@ -1153,6 +1243,34 @@ export default function Workspace() {
                 </div>
               )}
             </div>
+
+            {previewView === "replay" && playScreenshots.length ? (
+              <div className="replay-controls">
+                <button
+                  onClick={() => setPlayStep((value) => Math.max(0, value - 1))}
+                  disabled={playStep <= 0}
+                  type="button"
+                >
+                  ←
+                </button>
+                <span>Bước {playStep + 1}/{playScreenshots.length}</span>
+                <button
+                  onClick={() => setPlayStep((value) => Math.min(playScreenshots.length - 1, value + 1))}
+                  disabled={playStep >= playScreenshots.length - 1}
+                  type="button"
+                >
+                  →
+                </button>
+              </div>
+            ) : null}
+
+            {(playReport || visualReview) ? (
+              <div className="playtest-result">
+                <strong>AI Play Test</strong>
+                {visualReview ? <p>{visualReview}</p> : null}
+                {playReport ? <pre>{playReport}</pre> : null}
+              </div>
+            ) : null}
           </div>
 
           <div className="ai-card">
