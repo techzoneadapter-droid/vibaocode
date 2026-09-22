@@ -103,11 +103,11 @@ export async function ensurePublicRepo(
       );
     }
   } else {
-    const dirty = await shell(
+    const trackedDirty = await shell(
       sandbox,
-      `cd ${JSON.stringify(dir)} && git status --porcelain | grep -vE '^\\?\\? \\.vibaocode-' || true`,
+      `cd ${JSON.stringify(dir)} && git diff --quiet HEAD -- || echo dirty`,
     );
-    if (!dirty.stdout.trim()) {
+    if (!trackedDirty.stdout.trim()) {
       await shell(
         sandbox,
         `cd ${JSON.stringify(dir)} && git fetch origin ${JSON.stringify(branch)} --depth=1 && git reset --hard origin/${JSON.stringify(branch)}`,
