@@ -237,7 +237,7 @@ export async function POST(request: NextRequest) {
     const innerCommand = [
       "set +e",
       `cd ${JSON.stringify(ensuredDir)}`,
-      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec - --sandbox danger-full-access --ask-for-approval never --json > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
+      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec - --dangerously-bypass-approvals-and-sandbox --json > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
       "CODE=$?",
       'printf "%s" "$CODE" > .vibaocode-codex-exit.txt',
       "exit 0",
