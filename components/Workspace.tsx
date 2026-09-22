@@ -439,6 +439,15 @@ export default function Workspace() {
   async function connectRepo() {
     setRepoLoading(true);
     setError("");
+    setSandboxRunning(false);
+    setSandboxName("");
+    setPreviewUrl("");
+    setRunLogs("");
+    setTestSummary("");
+    setPlayScreenshots([]);
+    setLiveTestImage("");
+    setPlayReport("");
+    setVisualReview("");
     setNotice("Đang đọc repository…");
     try {
       const query = new URLSearchParams({ repo, branch });
