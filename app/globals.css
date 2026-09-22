@@ -2359,3 +2359,170 @@ button:disabled {
   font-size: 10px;
   line-height: 1.45;
 }
+
+
+/* AI progress + real Codex quota */
+.ai-progress-card,
+.ai-usage-card {
+  margin: 10px 12px 0;
+  padding: 11px;
+  border: 1px solid #23383d;
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(14, 23, 28, 0.98), rgba(10, 17, 21, 0.98));
+}
+
+.ai-progress-card {
+  border-color: rgba(62, 201, 157, 0.24);
+}
+
+.ai-progress-card.complete {
+  border-color: rgba(76, 214, 166, 0.42);
+}
+
+.ai-progress-head,
+.ai-usage-head,
+.usage-meter-row > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ai-progress-head > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-progress-head strong {
+  color: #b8f5df;
+  font-size: 11px;
+}
+
+.ai-progress-head > span {
+  color: #8da0a7;
+  font-size: 8px;
+  text-align: right;
+  max-width: 58%;
+}
+
+.ai-progress-track,
+.usage-meter {
+  position: relative;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #172329;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.025);
+}
+
+.ai-progress-track {
+  margin-top: 9px;
+}
+
+.ai-progress-track i,
+.usage-meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f9f7d, #52d4a8);
+  transition: width 360ms ease;
+}
+
+.ai-progress-card.complete .ai-progress-track i {
+  background: linear-gradient(90deg, #42b88f, #79edbd);
+}
+
+.ai-progress-card > small,
+.usage-meter-row > small,
+.usage-token-note {
+  display: block;
+  margin-top: 6px;
+  color: #687d84;
+  font-size: 7.5px;
+  line-height: 1.4;
+}
+
+.ai-run-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.ai-run-usage span {
+  padding: 4px 6px;
+  border: 1px solid #23383d;
+  border-radius: 6px;
+  background: #0c1519;
+  color: #718990;
+  font-size: 7px;
+  font-weight: 700;
+}
+
+.ai-usage-card {
+  margin-top: 8px;
+  border-color: rgba(217, 180, 91, 0.18);
+}
+
+.ai-usage-head {
+  margin-bottom: 9px;
+}
+
+.ai-usage-head .text-button {
+  font-size: 7px;
+  min-height: 22px;
+}
+
+.usage-meter-row {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.usage-meter-row + .usage-meter-row {
+  padding-top: 8px;
+  border-top: 1px solid #1c2b30;
+}
+
+.usage-meter-row strong {
+  color: #d8e3e0;
+  font-size: 8px;
+}
+
+.usage-meter-row span {
+  color: #c7aa68;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.usage-meter-row.secondary span {
+  color: #80bdac;
+}
+
+.usage-meter {
+  height: 6px;
+}
+
+.usage-meter i {
+  background: linear-gradient(90deg, #b98b45, #d4b35f);
+}
+
+.usage-meter-row.secondary .usage-meter i {
+  background: linear-gradient(90deg, #3f8c77, #64b99f);
+}
+
+.codex-usage-refresh {
+  width: 100%;
+  margin-top: 7px;
+  justify-content: center;
+}
+
+@media (max-width: 720px) {
+  .ai-progress-card,
+  .ai-usage-card {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+}
