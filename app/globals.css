@@ -1117,3 +1117,98 @@ button:disabled {
     min-width: 640px;
   }
 }
+
+
+.ai-scope-row {
+  padding: 0 12px 8px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.project-agent-result {
+  margin: 9px 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0c1014;
+}
+
+.project-agent-summary {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(52, 211, 153, 0.045);
+}
+
+.project-agent-summary strong {
+  display: block;
+  color: #d7f9eb;
+  font-size: 10px;
+  margin-bottom: 4px;
+}
+
+.project-agent-summary p {
+  margin: 0;
+  color: #a9b6c3;
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.project-agent-summary span {
+  display: block;
+  color: var(--faint);
+  font-size: 8.5px;
+  line-height: 1.4;
+  margin-top: 5px;
+}
+
+.project-file-list {
+  display: grid;
+}
+
+.project-file-list button {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid #1c232b;
+  background: transparent;
+  color: #c7d0da;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.project-file-list button:first-child {
+  border-top: 0;
+}
+
+.project-file-list button:hover {
+  background: #151b22;
+}
+
+.project-file-list button > span {
+  min-width: 0;
+}
+
+.project-file-list strong,
+.project-file-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.project-file-list strong {
+  font-size: 9.5px;
+  white-space: nowrap;
+  color: #dce4ec;
+}
+
+.project-file-list small {
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 8.5px;
+  line-height: 1.35;
+  white-space: normal;
+}
