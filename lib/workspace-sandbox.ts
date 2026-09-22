@@ -58,6 +58,30 @@ export async function shell(
 }
 
 export async function ensureCodexCli(sandbox: Sandbox) {
+  const builtIn = await shell(
+    sandbox,
+    `if command -v codex >/dev/null 2>&1; then
+  BIN="$(command -v codex)"
+  echo "$BIN"
+  "$BIN" --version 2>&1
+fi`,
+  );
+
+  const builtInLines = builtIn.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (builtIn.exitCode === 0 && builtInLines.length >= 2) {
+    return {
+      bin: builtInLines[0],
+      version: builtInLines[builtInLines.length - 1],
+      codexHome: "/vercel/sandbox/.codex",
+      source: "vercel-base-image" as const,
+    };
+  }
+
   const toolsDir = "/vercel/sandbox/.vibaocode-tools/codex";
   const bin = `${toolsDir}/node_modules/.bin/codex`;
   const setup = await shell(
@@ -70,6 +94,7 @@ if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
 if [ ! -x node_modules/.bin/codex ]; then
   npm install --no-audit --no-fund @openai/codex@latest >/tmp/vibaocode-codex-install.log 2>&1
 fi
+printf '%s\n' ${JSON.stringify(bin)}
 node_modules/.bin/codex --version
 `,
   );
@@ -80,14 +105,21 @@ node_modules/.bin/codex --version
       "tail -n 120 /tmp/vibaocode-codex-install.log 2>/dev/null || true",
     );
     throw new Error(
-      `Không cài được Codex CLI trong Cloud Sandbox.\n${log.stdout || setup.stderr || setup.stdout}`,
+      `Không tìm thấy Codex CLI có sẵn và cũng không cài được bản dự phòng.\n${log.stdout || setup.stderr || setup.stdout}`,
     );
   }
 
+  const lines = setup.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
   return {
-    bin,
-    version: setup.stdout.trim().split("\n").pop() || "codex",
+    bin: lines[0] || bin,
+    version: lines[lines.length - 1] || "codex",
     codexHome: "/vercel/sandbox/.codex",
+    source: "npm-fallback" as const,
   };
 }
 
