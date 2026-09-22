@@ -2526,3 +2526,73 @@ button:disabled {
     margin-right: 8px;
   }
 }
+
+
+/* Codex model selector */
+.codex-model-card {
+  margin: 8px 12px 0;
+  padding: 11px;
+  border: 1px solid rgba(88, 158, 214, 0.2);
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(15, 24, 31, 0.98), rgba(10, 17, 21, 0.98));
+  display: grid;
+  gap: 9px;
+}
+
+.codex-model-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.codex-model-card-head .text-button {
+  min-height: 22px;
+  font-size: 7px;
+}
+
+.codex-model-card label,
+.codex-settings-model label {
+  display: grid;
+  gap: 5px;
+  color: #74868d;
+  font-size: 7.5px;
+  font-weight: 700;
+}
+
+.codex-model-card select,
+.codex-settings-model select {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid #26363d;
+  border-radius: 8px;
+  background: #0b1216;
+  color: #d8e5e2;
+  padding: 0 8px;
+  font-size: 9px;
+  outline: none;
+}
+
+.codex-model-card select:focus,
+.codex-settings-model select:focus {
+  border-color: rgba(82, 212, 168, 0.55);
+  box-shadow: 0 0 0 2px rgba(82, 212, 168, 0.08);
+}
+
+.codex-settings-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+@media (max-width: 720px) {
+  .codex-model-card {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  .codex-settings-model {
+    grid-template-columns: 1fr;
+  }
+}
