@@ -354,6 +354,147 @@ async function readCodexUsage(
   }
 }
 
+function modelReaderSource() {
+  return String.raw`
+const { spawn } = require("child_process");
+
+const bin = process.argv[2];
+const codexHome = process.argv[3];
+const child = spawn(bin, ["app-server", "--stdio"], {
+  env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: "error" },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+
+let buffer = "";
+let initialized = false;
+let finished = false;
+
+function send(message) {
+  child.stdin.write(JSON.stringify(message) + "\n");
+}
+
+function finish(payload) {
+  if (finished) return;
+  finished = true;
+  process.stdout.write(JSON.stringify(payload));
+  try { child.kill("SIGTERM"); } catch {}
+  setTimeout(() => process.exit(0), 100);
+}
+
+child.stdout.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  const lines = buffer.split(/\r?\n/);
+  buffer = lines.pop() || "";
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (message.id === 1 && !initialized) {
+      initialized = true;
+      send({ method: "initialized" });
+      send({
+        method: "model/list",
+        id: 8,
+        params: { limit: 50, includeHidden: false },
+      });
+      continue;
+    }
+
+    if (message.id === 8) {
+      if (message.error) {
+        finish({ error: message.error.message || JSON.stringify(message.error), models: [] });
+        return;
+      }
+
+      const data = Array.isArray(message.result?.data) ? message.result.data : [];
+      finish({
+        models: data.map((item) => ({
+          id: item.id || item.model,
+          model: item.model || item.id,
+          displayName: item.displayName || item.model || item.id,
+          isDefault: Boolean(item.isDefault),
+          defaultReasoningEffort: item.defaultReasoningEffort || null,
+          supportedReasoningEfforts: Array.isArray(item.supportedReasoningEfforts)
+            ? item.supportedReasoningEfforts.map((entry) => ({
+                reasoningEffort: entry.reasoningEffort,
+                description: entry.description || "",
+              }))
+            : [],
+        })),
+      });
+    }
+  }
+});
+
+child.on("error", (error) => {
+  finish({ error: error.message, models: [] });
+});
+
+send({
+  method: "initialize",
+  id: 1,
+  params: {
+    clientInfo: {
+      name: "vibaocode-models",
+      title: "Vibaocode Models",
+      version: "0.1.0",
+    },
+  },
+});
+
+setTimeout(() => {
+  if (!finished) finish({ error: "Codex model/list timed out.", models: [] });
+}, 12000);
+`;
+}
+
+async function readCodexModels(
+  sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>,
+  codex: Awaited<ReturnType<typeof ensureCodexCli>>,
+) {
+  const scriptPath = "/tmp/vibaocode-codex-models.cjs";
+  const scriptBase64 = Buffer.from(modelReaderSource(), "utf8").toString("base64");
+
+  await shell(
+    sandbox,
+    `printf '%s' ${JSON.stringify(scriptBase64)} | base64 -d > ${JSON.stringify(scriptPath)}`,
+  );
+
+  const result = await shell(
+    sandbox,
+    `timeout 18s node ${JSON.stringify(scriptPath)} ${JSON.stringify(codex.bin)} ${JSON.stringify(codex.codexHome)} 2>/tmp/vibaocode-codex-models.err || true`,
+  );
+
+  if (!result.stdout.trim()) {
+    const error = await shell(
+      sandbox,
+      "tail -n 80 /tmp/vibaocode-codex-models.err 2>/dev/null || true",
+    );
+    return {
+      models: [],
+      error: error.stdout.trim() || "Codex chưa trả về danh sách model.",
+    };
+  }
+
+  try {
+    return JSON.parse(result.stdout.trim());
+  } catch {
+    return {
+      models: [],
+      error: "Không đọc được danh sách model từ Codex.",
+      raw: result.stdout.slice(-3000),
+    };
+  }
+}
+
 async function readState(sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>) {
   const result = await shell(
     sandbox,
@@ -484,6 +625,32 @@ echo $! > ${JSON.stringify(PID_FILE)}
         version: codex.version,
         source: codex.source,
         detail: status.stdout.trim() || status.stderr.trim(),
+      });
+    }
+
+    if (action === "models") {
+      const codex = await ensureCodexCli(sandbox);
+      await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
+
+      const status = await shell(
+        sandbox,
+        `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} login status 2>&1 || true`,
+      );
+      const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
+
+      if (!connected) {
+        return NextResponse.json(
+          { connected: false, models: [], error: "Codex chưa đăng nhập ChatGPT." },
+          { status: 401 },
+        );
+      }
+
+      const snapshot = await readCodexModels(sandbox, codex);
+      return NextResponse.json({
+        connected: true,
+        version: codex.version,
+        source: codex.source,
+        ...snapshot,
       });
     }
 
