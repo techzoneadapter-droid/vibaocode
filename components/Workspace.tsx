@@ -588,7 +588,15 @@ export default function Workspace() {
           <div className="repo-quick">
             <input value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/repo" />
             <div className="repo-quick-row">
-              <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+              <input
+                value={branch}
+                onChange={(e) => {
+                  setBranch(e.target.value);
+                  setReviewBase("");
+                  setPrUrl("");
+                }}
+                placeholder="main"
+              />
               <button onClick={connectRepo} disabled={repoLoading} type="button">
                 {repoLoading ? <Loader2 className="spin" size={15} /> : <Play size={15} />}
                 Load
