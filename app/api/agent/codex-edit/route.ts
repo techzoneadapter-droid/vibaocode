@@ -145,6 +145,22 @@ export async function POST(request: NextRequest) {
     const branch = String(body.branch || "main").trim();
     const prompt = String(body.prompt || "").trim();
     const action = String(body.action || "run");
+    const requestedModel = String(body.codexModel || "").trim();
+    const requestedReasoning = String(body.codexReasoning || "").trim().toLowerCase();
+
+    if (
+      requestedModel &&
+      !/^[A-Za-z0-9._:-]+$/.test(requestedModel)
+    ) {
+      return NextResponse.json({ error: "Codex model không hợp lệ." }, { status: 400 });
+    }
+
+    if (
+      requestedReasoning &&
+      !["minimal", "low", "medium", "high", "xhigh", "max"].includes(requestedReasoning)
+    ) {
+      return NextResponse.json({ error: "Mức reasoning Codex không hợp lệ." }, { status: 400 });
+    }
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -175,6 +191,12 @@ export async function POST(request: NextRequest) {
     await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
     const codexCommand =
       `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)}`;
+    const modelArgs = [
+      requestedModel ? `--model ${JSON.stringify(requestedModel)}` : "",
+      requestedReasoning
+        ? `--config ${JSON.stringify(`model_reasoning_effort="${requestedReasoning}"`)}`
+        : "",
+    ].filter(Boolean).join(" ");
 
     await writeProgress(sandbox, progressPath, {
       percent: 8,
@@ -238,7 +260,7 @@ export async function POST(request: NextRequest) {
     const innerCommand = [
       "set +e",
       `cd ${JSON.stringify(ensuredDir)}`,
-      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec - --dangerously-bypass-approvals-and-sandbox --json > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
+      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
       "CODE=$?",
       'printf "%s" "$CODE" > .vibaocode-codex-exit.txt',
       "exit 0",
@@ -310,7 +332,10 @@ export async function POST(request: NextRequest) {
       `cd ${JSON.stringify(ensuredDir)} && tail -n 240 .vibaocode-codex-stderr.log 2>/dev/null || true`,
     );
 
-    if (/bwrap:|bubblewrap|unexpected capabilities but not setuid/i.test(stderr.stdout)) {
+    const agentSummary = lastAgentMessage(events.stdout);
+    const sandboxFailureText = `${stderr.stdout}\n${events.stdout}\n${agentSummary}`;
+
+    if (/bwrap:|bubblewrap|unexpected capabilities but not setuid|failed rtm_newaddr/i.test(sandboxFailureText)) {
       await writeProgress(sandbox, progressPath, {
         percent: 0,
         phase: "Lỗi Linux sandbox lồng nhau",
@@ -319,8 +344,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Codex vẫn cố khởi động Bubblewrap trong Cloud Sandbox. Vibaocode đã chuyển sang danger-full-access cho lớp Codex; hãy Load lại app để nhận bản runtime mới.",
-          codexLog: stderr.stdout.slice(-6000),
+            "Codex runtime vẫn chạm Bubblewrap dù Cloud Sandbox đã cách ly. Vibaocode đã ép dùng Codex CLI mới nhất + ignore user config + danger-full-access. Hãy chạy lại sau khi deployment mới hoàn tất.",
+          codexLog: sandboxFailureText.slice(-8000),
+          codexVersion: codex.version,
+          requestedModel: requestedModel || null,
         },
         { status: 500 },
       );
@@ -405,7 +432,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            lastAgentMessage(events.stdout) ||
+            agentSummary ||
             stderr.stdout.slice(-4000) ||
             "Codex kết thúc với lỗi và không tạo thay đổi.",
           codexExitCode,
@@ -415,7 +442,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({
-      model: `codex-chatgpt • ${codex.version}`,
+      model: `${requestedModel || "Codex default"} • ${requestedReasoning || "default reasoning"} • ${codex.version}`,
       summary:
         lastAgentMessage(events.stdout) ||
         (codexExitCode === 0
@@ -429,7 +456,9 @@ export async function POST(request: NextRequest) {
       codexLog: stderr.stdout.slice(-12000),
       usage: usageFromEvents(events.stdout),
       progress: await readProgress(sandbox, progressPath),
-      sandboxMode: "vercel-isolated + codex-danger-full-access",
+      sandboxMode: "vercel-isolated + latest-codex + ignore-user-config + danger-full-access",
+      selectedModel: requestedModel || null,
+      selectedReasoning: requestedReasoning || null,
     });
   } catch (error) {
     return NextResponse.json(
