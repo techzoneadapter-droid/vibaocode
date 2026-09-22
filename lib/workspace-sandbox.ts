@@ -101,7 +101,7 @@ export async function ensurePublicRepo(
   } else {
     const dirty = await shell(
       sandbox,
-      `cd ${JSON.stringify(dir)} && git status --porcelain`,
+      `cd ${JSON.stringify(dir)} && git status --porcelain | grep -vE '^\\?\\? \\.vibaocode-' || true`,
     );
     if (!dirty.stdout.trim()) {
       await shell(
