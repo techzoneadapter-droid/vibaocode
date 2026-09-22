@@ -261,7 +261,8 @@ button:disabled {
 .repo-quick input,
 .search-box input,
 .preview-url-row input,
-.settings-modal input {
+.settings-modal input,
+.settings-modal select {
   width: 100%;
   border: 1px solid var(--border);
   background: #0c0f13;
@@ -416,6 +417,25 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.editor-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pr-link {
+  min-height: 31px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  background: rgba(125, 211, 252, 0.06);
+  color: #bae6fd;
+  text-decoration: none;
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .segmented {
