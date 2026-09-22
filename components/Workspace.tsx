@@ -93,6 +93,18 @@ type CodexLimit = {
   secondary?: CodexLimitWindow | null;
 };
 
+type CodexModelOption = {
+  id: string;
+  model: string;
+  displayName: string;
+  isDefault?: boolean;
+  defaultReasoningEffort?: string | null;
+  supportedReasoningEfforts?: Array<{
+    reasoningEffort: string;
+    description?: string;
+  }>;
+};
+
 type CodexUsageSnapshot = {
   rateLimits?: {
     rateLimits?: CodexLimit | null;
@@ -297,6 +309,10 @@ export default function Workspace() {
   const [codexDiagnosing, setCodexDiagnosing] = useState(false);
   const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
   const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [codexModels, setCodexModels] = useState<CodexModelOption[]>([]);
+  const [codexModelsLoading, setCodexModelsLoading] = useState(false);
+  const [codexModel, setCodexModel] = useState("");
+  const [codexReasoning, setCodexReasoning] = useState("medium");
   const [aiProgress, setAiProgress] = useState(0);
   const [aiProgressLabel, setAiProgressLabel] = useState("Sẵn sàng");
   const [aiProgressDetail, setAiProgressDetail] = useState("");
@@ -352,6 +368,8 @@ export default function Workspace() {
       }
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
       if (data.model) setModel(data.model);
+      if (data.codexModel) setCodexModel(data.codexModel);
+      if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
       if (["codex-account","openai-api","claude-api","gemini-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
@@ -382,13 +400,14 @@ export default function Workspace() {
   useEffect(() => {
     if (codexStatus === "connected" && workspaceId) {
       void loadCodexUsage(false);
+      void loadCodexModels(false);
     }
   }, [codexStatus, workspaceId]);
 
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
-      JSON.stringify({ repo, branch, githubToken, openAIKey, model, aiProvider, anthropicKey, geminiKey, autoSync, previewUrl })
+      JSON.stringify({ repo, branch, githubToken, openAIKey, model, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, autoSync, previewUrl })
     );
     setSettingsOpen(false);
     setNotice("Đã lưu cài đặt cho phiên trình duyệt này");
@@ -871,6 +890,7 @@ export default function Workspace() {
           setCodexUserCode("");
           setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
           void loadCodexUsage(false);
+          void loadCodexModels(false);
           return;
         }
 
@@ -910,7 +930,10 @@ export default function Workspace() {
         setError(data.error || data.detail || "Codex login lỗi.");
       }
       setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : data.userCode ? `Đang chờ mã ${data.userCode}` : "Codex chưa đăng nhập xong");
-      if (data.connected) void loadCodexUsage(false);
+      if (data.connected) {
+        void loadCodexUsage(false);
+        void loadCodexModels(false);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex status failed.");
     }
@@ -933,6 +956,52 @@ export default function Workspace() {
       if (announce) setError(err instanceof Error ? err.message : "Không đọc được hạn mức Codex.");
     } finally {
       setCodexUsageLoading(false);
+    }
+  }
+
+  async function loadCodexModels(announce = false) {
+    if (!workspaceId) return;
+    setCodexModelsLoading(true);
+    try {
+      const response = await fetch("/api/agent/codex-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "models" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được danh sách model Codex.");
+
+      const models = Array.isArray(data.models) ? data.models : [];
+      setCodexModels(models);
+
+      if (models.length) {
+        const current = models.find((item: CodexModelOption) => item.model === codexModel);
+        const selected = current || models.find((item: CodexModelOption) => item.isDefault) || models[0];
+        if (!current) setCodexModel(selected.model);
+
+        const efforts = Array.isArray(selected.supportedReasoningEfforts)
+          ? selected.supportedReasoningEfforts.map((item: any) => item.reasoningEffort)
+          : [];
+
+        if (efforts.length && !efforts.includes(codexReasoning)) {
+          setCodexReasoning(selected.defaultReasoningEffort || efforts[0]);
+        }
+      }
+
+      if (announce) setNotice(`Đã tải ${models.length} model Codex khả dụng`);
+    } catch (err) {
+      if (announce) setError(err instanceof Error ? err.message : "Không đọc được model Codex.");
+    } finally {
+      setCodexModelsLoading(false);
+    }
+  }
+
+  function chooseCodexModel(nextModel: string) {
+    setCodexModel(nextModel);
+    const selected = codexModels.find((item) => item.model === nextModel);
+    const efforts = selected?.supportedReasoningEfforts?.map((item) => item.reasoningEffort) || [];
+    if (efforts.length && !efforts.includes(codexReasoning)) {
+      setCodexReasoning(selected?.defaultReasoningEffort || efforts[0]);
     }
   }
 
@@ -1077,6 +1146,8 @@ export default function Workspace() {
                 repo,
                 branch,
                 prompt,
+                codexModel,
+                codexReasoning,
               }
             : useExternalProvider
               ? {
@@ -1806,7 +1877,7 @@ export default function Workspace() {
               <div className="provider-row">
                 <span className="provider-chip">
                   {aiProvider === "codex-account"
-                    ? "ChatGPT / Codex"
+                    ? (codexModels.find((item) => item.model === codexModel)?.displayName || codexModel || "ChatGPT / Codex")
                     : aiProvider === "claude-api"
                       ? "Claude Sonnet 4.6"
                       : aiProvider === "gemini-api"
@@ -1817,6 +1888,50 @@ export default function Workspace() {
                   <Settings size={13} /> Connect
                 </button>
               </div>
+
+              {aiProvider === "codex-account" && codexStatus === "connected" ? (
+                <div className="codex-model-card">
+                  <div className="codex-model-card-head">
+                    <span className="eyebrow">CODEX MODEL</span>
+                    <button className="text-button" onClick={() => loadCodexModels(true)} disabled={codexModelsLoading} type="button">
+                      {codexModelsLoading ? <Loader2 className="spin" size={11} /> : <RefreshCw size={11} />}
+                      Làm mới
+                    </button>
+                  </div>
+                  <label>
+                    Model
+                    <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
+                      {!codexModels.length ? <option value="">Đang đọc từ Codex…</option> : null}
+                      {codexModels.map((item) => (
+                        <option key={item.model} value={item.model}>
+                          {item.displayName}{item.isDefault ? " • mặc định" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select
+                      value={codexReasoning}
+                      onChange={(e) => setCodexReasoning(e.target.value)}
+                      disabled={!codexModel}
+                    >
+                      {(() => {
+                        const selected = codexModels.find((item) => item.model === codexModel);
+                        const efforts = selected?.supportedReasoningEfforts || [];
+                        if (!efforts.length) {
+                          return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
+                        }
+                        return efforts.map((item) => (
+                          <option key={item.reasoningEffort} value={item.reasoningEffort}>
+                            {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
+                          </option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
 
               {aiProvider === "codex-account" && codexStatus === "connected" ? (
                 <div className="ai-usage-card">
@@ -2106,6 +2221,36 @@ export default function Workspace() {
                       {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
                     </span>
                   </div>
+                  {codexStatus === "connected" ? (
+                    <div className="codex-settings-model">
+                      <label>
+                        Codex model
+                        <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
+                          {!codexModels.length ? <option value="">Đang đọc từ Codex…</option> : null}
+                          {codexModels.map((item) => (
+                            <option key={item.model} value={item.model}>
+                              {item.displayName}{item.isDefault ? " • mặc định" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Reasoning
+                        <select value={codexReasoning} onChange={(e) => setCodexReasoning(e.target.value)} disabled={!codexModel}>
+                          {(() => {
+                            const selected = codexModels.find((item) => item.model === codexModel);
+                            const efforts = selected?.supportedReasoningEfforts || [];
+                            if (!efforts.length) return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
+                            return efforts.map((item) => (
+                              <option key={item.reasoningEffort} value={item.reasoningEffort}>
+                                {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
+                              </option>
+                            ));
+                          })()}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
                   {codexStatus === "waiting" ? (
                     <div className="codex-device-card">
                       <span className="eyebrow">DEVICE LOGIN</span>
