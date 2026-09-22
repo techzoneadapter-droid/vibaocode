@@ -218,7 +218,22 @@ export default function Workspace() {
   const [githubToken, setGithubToken] = useState("");
   const [openAIKey, setOpenAIKey] = useState("");
   const [model, setModel] = useState("gpt-5.3-codex");
+  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account">("openai-api");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [geminiKey, setGeminiKey] = useState("");
   const [previewUrl, setPreviewUrl] = useState("https://vibaocode.vercel.app");
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [sandboxRunning, setSandboxRunning] = useState(false);
+  const [sandboxName, setSandboxName] = useState("");
+  const [runLogs, setRunLogs] = useState("");
+  const [testSummary, setTestSummary] = useState("");
+  const [runLoading, setRunLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
+  const [autoSync, setAutoSync] = useState(true);
+  const [codexStatus, setCodexStatus] = useState<"disconnected" | "waiting" | "connected">("disconnected");
+  const [codexVerificationUrl, setCodexVerificationUrl] = useState("");
+  const [codexUserCode, setCodexUserCode] = useState("");
+  const [codexConnecting, setCodexConnecting] = useState(false);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
   const [projectSummary, setProjectSummary] = useState("");
@@ -249,6 +264,13 @@ export default function Workspace() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let currentWorkspaceId = sessionStorage.getItem("vibaocode.workspaceId") || "";
+    if (!currentWorkspaceId) {
+      currentWorkspaceId = crypto.randomUUID();
+      sessionStorage.setItem("vibaocode.workspaceId", currentWorkspaceId);
+    }
+    setWorkspaceId(currentWorkspaceId);
+
     const saved = sessionStorage.getItem("vibaocode.settings");
     if (!saved) return;
     try {
@@ -258,6 +280,10 @@ export default function Workspace() {
       if (data.githubToken) setGithubToken(data.githubToken);
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
       if (data.model) setModel(data.model);
+      if (data.aiProvider === "codex-account" || data.aiProvider === "openai-api") setAiProvider(data.aiProvider);
+      if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
+      if (data.geminiKey) setGeminiKey(data.geminiKey);
+      if (typeof data.autoSync === "boolean") setAutoSync(data.autoSync);
       if (data.previewUrl) setPreviewUrl(data.previewUrl);
     } catch {
       // Ignore malformed session data.
@@ -274,7 +300,7 @@ export default function Workspace() {
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
-      JSON.stringify({ repo, branch, githubToken, openAIKey, model, previewUrl })
+      JSON.stringify({ repo, branch, githubToken, openAIKey, model, aiProvider, anthropicKey, geminiKey, autoSync, previewUrl })
     );
     setSettingsOpen(false);
     setNotice("Đã lưu cài đặt cho phiên trình duyệt này");
@@ -367,6 +393,179 @@ export default function Workspace() {
     }
   }
 
+  async function runCloudProject() {
+    if (!workspaceId || !treeItems.length) {
+      setError("Hãy Load repository trước khi chạy.");
+      return false;
+    }
+    setRunLoading(true);
+    setError("");
+    setNotice("Cloud Sandbox đang cài và chạy dự án…");
+    try {
+      const response = await fetch("/api/sandbox/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "start",
+          workspaceId,
+          repo,
+          branch,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không chạy được dự án.");
+      setSandboxName(data.sandboxName || "");
+      setSandboxRunning(Boolean(data.running));
+      setRunLogs(data.logs || "");
+      if (data.previewUrl) {
+        setPreviewUrl(data.previewUrl);
+        setPreviewMode("url");
+        setPreviewKey((value) => value + 1);
+      }
+      setNotice(data.running ? "Dự án đang chạy trong Cloud Sandbox" : "Server chưa sẵn sàng");
+      return Boolean(data.running);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Cloud Run failed.");
+      setNotice("Cloud Run thất bại");
+      return false;
+    } finally {
+      setRunLoading(false);
+    }
+  }
+
+  async function syncDraft(path: string, content: string) {
+    if (!workspaceId || !sandboxRunning) return;
+    try {
+      const response = await fetch("/api/sandbox/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "sync",
+          workspaceId,
+          repo,
+          branch,
+          files: [{ path, content }],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Live sync failed.");
+      if (data.previewUrl) setPreviewUrl(data.previewUrl);
+      setPreviewKey((value) => value + 1);
+      setNotice(`Live Preview đã cập nhật • ${path}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Live sync failed.");
+    }
+  }
+
+  async function testCloudProject() {
+    if (!workspaceId || !treeItems.length) {
+      setError("Hãy Load repository trước khi test.");
+      return;
+    }
+    setTestLoading(true);
+    setError("");
+    setNotice("Tester đang chạy lint / test / build / smoke test…");
+    try {
+      const response = await fetch("/api/sandbox/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "test",
+          workspaceId,
+          repo,
+          branch,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không chạy được test.");
+      setSandboxName(data.sandboxName || sandboxName);
+      setSandboxRunning(Boolean(data.serverRunning));
+      if (data.previewUrl) {
+        setPreviewUrl(data.previewUrl);
+        setPreviewMode("url");
+        setPreviewKey((value) => value + 1);
+      }
+      const lines = (data.checks || []).map(
+        (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
+      );
+      lines.push(`HTTP smoke: ${data.smokeStatus || "unknown"}`);
+      setTestSummary(lines.join("\n\n"));
+      setRunLogs(data.serverLogs || runLogs);
+      setNotice(data.passed ? "Tester: PASS" : "Tester phát hiện lỗi");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Tester failed.");
+      setNotice("Tester gặp lỗi");
+    } finally {
+      setTestLoading(false);
+    }
+  }
+
+  async function openReview() {
+    if (!sandboxRunning) await runCloudProject();
+    setTab("diff");
+  }
+
+  async function connectCodexAccount() {
+    if (!workspaceId) return;
+    setCodexConnecting(true);
+    setError("");
+    setNotice("Đang mở đăng nhập ChatGPT cho Codex…");
+    try {
+      const response = await fetch("/api/agent/codex-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "start" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không bắt đầu được Codex login.");
+      setCodexStatus("waiting");
+      setCodexVerificationUrl(data.verificationUrl || "");
+      setCodexUserCode(data.userCode || "");
+      if (data.verificationUrl) window.open(data.verificationUrl, "_blank", "noopener,noreferrer");
+
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const statusResponse = await fetch("/api/agent/codex-auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspaceId, action: "status" }),
+        });
+        const statusData = await statusResponse.json();
+        if (statusData.connected) {
+          setCodexStatus("connected");
+          setAiProvider("codex-account");
+          setNotice("Đã kết nối ChatGPT/Codex");
+          return;
+        }
+      }
+      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Codex login failed.");
+      setCodexStatus("disconnected");
+    } finally {
+      setCodexConnecting(false);
+    }
+  }
+
+  async function checkCodexAccount() {
+    if (!workspaceId) return;
+    try {
+      const response = await fetch("/api/agent/codex-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "status" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không kiểm tra được Codex.");
+      setCodexStatus(data.connected ? "connected" : "waiting");
+      if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
+      if (data.userCode) setCodexUserCode(data.userCode);
+      setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : "Codex chưa đăng nhập xong");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Codex status failed.");
+    }
+  }
+
   async function askAI() {
     if (!selected || !aiReady) return;
     setAiLoading(true);
@@ -410,18 +609,28 @@ export default function Workspace() {
     setNotice("Project Agent đang tìm file liên quan…");
 
     try {
-      const response = await fetch("/api/ai/project", {
+      const useCodexAccount = aiProvider === "codex-account";
+      const response = await fetch(useCodexAccount ? "/api/agent/codex-edit" : "/api/ai/project", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          repo,
-          branch,
-          githubToken,
-          apiKey: openAIKey,
-          model,
-          prompt,
-          projectContext,
-        }),
+        body: JSON.stringify(
+          useCodexAccount
+            ? {
+                workspaceId,
+                repo,
+                branch,
+                prompt,
+              }
+            : {
+                repo,
+                branch,
+                githubToken,
+                apiKey: openAIKey,
+                model,
+                prompt,
+                projectContext,
+              }
+        ),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Project Agent không xử lý được yêu cầu.");
@@ -429,6 +638,20 @@ export default function Workspace() {
       setProjectProposals(data.files || []);
       setProjectSummary(data.summary || "");
       setProjectPlan(data.plan || "");
+      if (data.previewUrl) {
+        setPreviewUrl(data.previewUrl);
+        setPreviewMode("url");
+        setPreviewKey((value) => value + 1);
+        setSandboxRunning(Boolean(data.serverRunning ?? true));
+      }
+      if (data.checks) {
+        const result = data.checks;
+        const lines = (result.checks || []).map(
+          (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-1800)}`
+        );
+        if (result.smokeStatus) lines.push(`HTTP smoke: ${result.smokeStatus}`);
+        setTestSummary(lines.join("\n\n"));
+      }
       setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Project Agent failed.");
@@ -448,13 +671,17 @@ export default function Workspace() {
     setNotice(`Đang review đề xuất cho ${item.path}`);
   }
 
-  function applyProposal() {
+  async function applyProposal() {
     if (!proposal) return;
-    setEditorContent(proposal);
+    const nextContent = proposal;
+    setEditorContent(nextContent);
     setProposal("");
     setProposalSummary("");
     setTab("code");
     setNotice("Đã áp dụng đề xuất vào bản nháp. Chưa push GitHub.");
+    if (selected && sandboxRunning) {
+      await syncDraft(selected.path, nextContent);
+    }
   }
 
   function undoDraft() {
@@ -709,13 +936,31 @@ export default function Workspace() {
                 </button>
                 <button
                   className={tab === "diff" ? "active" : ""}
-                  onClick={() => setTab("diff")}
-                  disabled={!selected}
+                  onClick={openReview}
+                  disabled={!selected || runLoading}
                   type="button"
                 >
                   <Eye size={14} /> Review
                 </button>
               </div>
+              <button
+                className="ghost-button"
+                onClick={runCloudProject}
+                disabled={!treeItems.length || runLoading}
+                type="button"
+              >
+                {runLoading ? <Loader2 className="spin" size={14} /> : <Play size={14} />}
+                Run
+              </button>
+              <button
+                className="ghost-button"
+                onClick={testCloudProject}
+                disabled={!treeItems.length || testLoading}
+                type="button"
+              >
+                {testLoading ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+                Auto Test
+              </button>
               <button className="ghost-button" onClick={undoDraft} disabled={!dirty && !proposal} type="button">
                 <RotateCcw size={14} /> Undo
               </button>
@@ -908,7 +1153,9 @@ export default function Workspace() {
                 <span className="eyebrow">AI CODER</span>
                 <strong>Prompt sửa code</strong>
               </div>
-              <span className="provider-chip">{model}</span>
+              <span className="provider-chip">
+                {aiProvider === "codex-account" ? "ChatGPT / Codex" : model}
+              </span>
             </div>
 
             <div className="ai-scope-row">
@@ -979,7 +1226,7 @@ export default function Workspace() {
             <div className="ai-foot">
               <button className="ghost-button" onClick={() => setSettingsOpen(true)} type="button">
                 <KeyRound size={14} />
-                API
+                {aiProvider === "codex-account" ? "Account" : "API"}
               </button>
               <button
                 className="ai-button"
@@ -991,6 +1238,17 @@ export default function Workspace() {
                 {aiScope === "project" ? "Phân tích & sửa dự án" : "Tạo bản sửa"}
               </button>
             </div>
+
+            {sandboxRunning && (runLogs || testSummary) ? (
+              <div className="runtime-console">
+                <div className="runtime-console-head">
+                  <strong>Cloud Runtime</strong>
+                  <span>{sandboxName || "sandbox"} • live sync {autoSync ? "ON" : "OFF"}</span>
+                </div>
+                {testSummary ? <pre>{testSummary}</pre> : null}
+                {runLogs ? <details><summary>Server logs</summary><pre>{runLogs}</pre></details> : null}
+              </div>
+            ) : null}
 
             <p className="privacy-note">
               {aiScope === "project"
@@ -1043,7 +1301,36 @@ export default function Workspace() {
             </div>
 
             <div className="settings-group">
-              <div className="settings-title"><Sparkles size={17} /><strong>OpenAI</strong></div>
+              <div className="settings-title"><Sparkles size={17} /><strong>AI Coding Agent</strong></div>
+              <label>
+                Cách kết nối
+                <select value={aiProvider} onChange={(e) => setAiProvider(e.target.value as "openai-api" | "codex-account")}>
+                  <option value="openai-api">OpenAI API</option>
+                  <option value="codex-account">ChatGPT / Codex account</option>
+                </select>
+              </label>
+              {aiProvider === "codex-account" ? (
+                <div className="account-connect-card">
+                  <div>
+                    <strong>ChatGPT / Codex</strong>
+                    <span className={`connection-state ${codexStatus}`}>
+                      {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
+                    </span>
+                  </div>
+                  {codexUserCode ? <p>Mã thiết bị: <code>{codexUserCode}</code></p> : null}
+                  {codexVerificationUrl ? (
+                    <a href={codexVerificationUrl} target="_blank" rel="noreferrer">Mở trang đăng nhập ChatGPT</a>
+                  ) : null}
+                  <div className="account-actions">
+                    <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
+                      {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
+                      Kết nối ChatGPT
+                    </button>
+                    <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
+                  </div>
+                </div>
+              ) : (
+                <>
               <label>
                 Model
                 <select value={model} onChange={(e) => setModel(e.target.value)}>
@@ -1064,10 +1351,47 @@ export default function Workspace() {
                   autoComplete="off"
                 />
               </label>
+                </>
+              )}
+
+              <details className="other-provider-box">
+                <summary>Kết nối AI khác</summary>
+                <label>
+                  Anthropic API key
+                  <input
+                    type="password"
+                    value={anthropicKey}
+                    onChange={(e) => setAnthropicKey(e.target.value)}
+                    placeholder="sk-ant-…"
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Gemini auth key
+                  <input
+                    type="password"
+                    value={geminiKey}
+                    onChange={(e) => setGeminiKey(e.target.value)}
+                    placeholder="AIza… / auth key"
+                    autoComplete="off"
+                  />
+                </label>
+                <p className="settings-hint">
+                  Khóa Anthropic/Gemini được lưu cho phiên trình duyệt. Adapter chạy code cho hai provider này sẽ được bật ở bước tiếp theo.
+                </p>
+              </details>
             </div>
 
             <div className="settings-group">
               <div className="settings-title"><MonitorSmartphone size={17} /><strong>Preview</strong></div>
+              <label className="toggle-label">
+                <input
+                  type="checkbox"
+                  checked={autoSync}
+                  onChange={(e) => setAutoSync(e.target.checked)}
+                />
+                Live Sync — code đổi tới đâu preview cập nhật tới đó
+              </label>
               <label>
                 Vercel / GitHub Pages URL
                 <input value={previewUrl} onChange={(e) => setPreviewUrl(e.target.value)} placeholder="https://…" />
