@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   ensurePublicRepo,
   getWorkspaceSandbox,
+  projectWorkspaceId,
   repoDirectory,
   shell,
   startDevServer,
@@ -85,7 +86,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sandbox = await getWorkspaceSandbox(workspaceId);
+    const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
     const dir = await ensurePublicRepo(sandbox, repo, branch);
     const server = await startDevServer(sandbox, dir);
 
