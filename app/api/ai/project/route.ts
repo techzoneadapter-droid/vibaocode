@@ -211,8 +211,8 @@ export async function POST(request: NextRequest) {
       planSchema
     );
 
-    const selectedPaths = Array.from(
-      new Set(
+    const selectedPaths: string[] = Array.from(
+      new Set<string>(
         (Array.isArray(plan.files) ? plan.files : [])
           .map((path: unknown) => String(path))
           .filter((path: string) => paths.includes(path))
