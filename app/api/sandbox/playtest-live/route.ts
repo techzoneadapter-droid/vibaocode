@@ -2,7 +2,9 @@ import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import {
   ensurePublicRepo,
+  ensureBrowserTester,
   getWorkspaceSandbox,
+  installDependencies,
   projectWorkspaceId,
   shell,
   startDevServer,
@@ -11,34 +13,6 @@ import {
 } from "../../../../lib/workspace-sandbox";
 
 export const maxDuration = 300;
-
-async function ensurePlaywright(sandbox: any) {
-  const toolsDir = "/vercel/sandbox/.vibaocode-tools";
-  const setup = await shell(
-    sandbox,
-    `
-set -e
-mkdir -p ${JSON.stringify(toolsDir)}
-cd ${JSON.stringify(toolsDir)}
-if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
-if [ ! -d node_modules/playwright ]; then npm install playwright >/dev/null 2>&1; fi
-if [ ! -f .chromium-ready ]; then
-  npx playwright install --with-deps chromium >/tmp/vibaocode-playwright-install.log 2>&1
-  touch .chromium-ready
-fi
-`,
-  );
-  if (setup.exitCode !== 0) {
-    const installLog = await shell(
-      sandbox,
-      "tail -n 180 /tmp/vibaocode-playwright-install.log 2>/dev/null || true",
-    );
-    throw new Error(
-      installLog.stdout || setup.stderr || setup.stdout || "Không cài được Playwright.",
-    );
-  }
-  return toolsDir;
-}
 
 function runnerSource() {
   return String.raw`
@@ -73,7 +47,10 @@ async function pause(ms = 650) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+});
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 1,
@@ -133,8 +110,24 @@ try {
         actions.push({ type: "canvas-click", x: rx, y: ry });
         await writeState({ label: "testing game canvas" });
         await page.mouse.click(box.x + box.width * rx, box.y + box.height * ry);
-        await pause(750);
+        await pause(500);
         await snap("canvas-" + actions.length);
+      }
+
+      const drags = [
+        [[0.2, 0.81], [0.25, 0.42]],
+        [[0.5, 0.81], [0.5, 0.36]],
+        [[0.8, 0.81], [0.72, 0.48]],
+      ];
+      for (const [[sx, sy], [tx, ty]] of drags) {
+        actions.push({ type: "canvas-drag", from: [sx, sy], to: [tx, ty] });
+        await writeState({ label: "dragging game piece" });
+        await page.mouse.move(box.x + box.width * sx, box.y + box.height * sy);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width * tx, box.y + box.height * ty, { steps: 14 });
+        await page.mouse.up();
+        await pause(700);
+        await snap("drag-" + actions.length);
       }
     }
   }
@@ -221,6 +214,7 @@ export async function POST(request: NextRequest) {
 
     if (action === "start") {
       const dir = await ensurePublicRepo(sandbox, repo, branch);
+      await installDependencies(sandbox, dir);
       const server = await startDevServer(sandbox, dir);
       if (!server.ok) {
         return NextResponse.json(
@@ -229,7 +223,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      await ensurePlaywright(sandbox);
+      await ensureBrowserTester(sandbox);
       const nextRunId = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
       const runDir = `${toolsDir}/live/${nextRunId}`;
       const scriptPath = `${toolsDir}/playtest-live.cjs`;
