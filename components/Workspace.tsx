@@ -12,6 +12,7 @@ import {
   Folder,
   FolderOpen,
   GitBranch,
+  GitPullRequest,
   Github,
   KeyRound,
   Loader2,
@@ -207,7 +208,10 @@ export default function Workspace() {
   const [branch, setBranch] = useState("main");
   const [githubToken, setGithubToken] = useState("");
   const [openAIKey, setOpenAIKey] = useState("");
+  const [model, setModel] = useState("gpt-5.3-codex");
   const [previewUrl, setPreviewUrl] = useState("");
+  const [reviewBase, setReviewBase] = useState("");
+  const [prUrl, setPrUrl] = useState("");
   const [treeItems, setTreeItems] = useState<RepoItem[]>([]);
   const [selected, setSelected] = useState<FileState | null>(null);
   const [editorContent, setEditorContent] = useState("");
@@ -226,6 +230,8 @@ export default function Workspace() {
   const [fileLoading, setFileLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [branchLoading, setBranchLoading] = useState(false);
+  const [prLoading, setPrLoading] = useState(false);
   const [notice, setNotice] = useState("Sẵn sàng");
   const [error, setError] = useState("");
 
@@ -238,6 +244,7 @@ export default function Workspace() {
       if (data.branch) setBranch(data.branch);
       if (data.githubToken) setGithubToken(data.githubToken);
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
+      if (data.model) setModel(data.model);
       if (data.previewUrl) setPreviewUrl(data.previewUrl);
     } catch {
       // Ignore malformed session data.
@@ -251,7 +258,7 @@ export default function Workspace() {
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
-      JSON.stringify({ repo, branch, githubToken, openAIKey, previewUrl })
+      JSON.stringify({ repo, branch, githubToken, openAIKey, model, previewUrl })
     );
     setSettingsOpen(false);
     setNotice("Đã lưu cài đặt cho phiên trình duyệt này");
@@ -353,6 +360,7 @@ export default function Workspace() {
         body: JSON.stringify({
           provider: "openai",
           apiKey: openAIKey,
+          model,
           prompt,
           filePath: selected.path,
           content: editorContent,
@@ -388,6 +396,93 @@ export default function Workspace() {
     setProposalSummary("");
     setTab("code");
     setNotice("Đã hoàn tác về phiên bản đang có trên GitHub");
+  }
+
+  async function createReviewBranch() {
+    if (!githubToken) {
+      setSettingsOpen(true);
+      setError("Thêm GitHub token trong Settings để tạo review branch.");
+      return;
+    }
+    if (reviewBase) {
+      setNotice(`Bạn đang ở review branch ${branch}`);
+      return;
+    }
+
+    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 12);
+    const newBranch = `vibaocode/review-${stamp}`;
+    setBranchLoading(true);
+    setError("");
+    setNotice("Đang tạo review branch…");
+
+    try {
+      const response = await fetch("/api/github/branch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-github-token": githubToken,
+        },
+        body: JSON.stringify({
+          repo,
+          baseBranch: branch,
+          newBranch,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không tạo được review branch.");
+
+      setReviewBase(branch);
+      setBranch(data.branch);
+      setPrUrl("");
+      setNotice(`Đã tạo ${data.branch}. Mọi Push tiếp theo sẽ vào branch này.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không tạo được review branch.");
+      setNotice("Tạo branch thất bại");
+    } finally {
+      setBranchLoading(false);
+    }
+  }
+
+  async function openPullRequest() {
+    if (!githubToken) {
+      setSettingsOpen(true);
+      setError("Thêm GitHub token trong Settings để mở pull request.");
+      return;
+    }
+    if (!reviewBase || reviewBase === branch) {
+      setError("Hãy tạo Review branch trước khi mở pull request.");
+      return;
+    }
+
+    setPrLoading(true);
+    setError("");
+    setNotice("Đang mở pull request…");
+
+    try {
+      const response = await fetch("/api/github/pr", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-github-token": githubToken,
+        },
+        body: JSON.stringify({
+          repo,
+          head: branch,
+          base: reviewBase,
+          title: `Vibaocode review: ${branch.replace("vibaocode/", "")}`,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không mở được pull request.");
+
+      setPrUrl(data.url);
+      setNotice(`Đã mở PR #${data.number}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không mở được pull request.");
+      setNotice("Mở PR thất bại");
+    } finally {
+      setPrLoading(false);
+    }
   }
 
   async function saveToGitHub() {
@@ -549,10 +644,34 @@ export default function Workspace() {
               <button className="ghost-button" onClick={undoDraft} disabled={!dirty && !proposal} type="button">
                 <RotateCcw size={14} /> Undo
               </button>
+              <button
+                className="ghost-button"
+                onClick={createReviewBranch}
+                disabled={branchLoading || Boolean(reviewBase)}
+                title={reviewBase ? `Review branch đang hoạt động: ${branch}` : "Tạo branch an toàn trước khi sửa"}
+                type="button"
+              >
+                {branchLoading ? <Loader2 className="spin" size={14} /> : <GitBranch size={14} />}
+                Review branch
+              </button>
               <button className="primary-button" onClick={saveToGitHub} disabled={!dirty || saving} type="button">
                 {saving ? <Loader2 className="spin" size={15} /> : <Save size={15} />}
                 Push
               </button>
+              <button
+                className="ghost-button"
+                onClick={openPullRequest}
+                disabled={!reviewBase || prLoading}
+                type="button"
+              >
+                {prLoading ? <Loader2 className="spin" size={14} /> : <GitPullRequest size={14} />}
+                PR
+              </button>
+              {prUrl ? (
+                <a className="pr-link" href={prUrl} target="_blank" rel="noreferrer">
+                  Mở PR
+                </a>
+              ) : null}
             </div>
           </div>
 
@@ -714,7 +833,7 @@ export default function Workspace() {
                 <span className="eyebrow">AI CODER</span>
                 <strong>Prompt sửa code</strong>
               </div>
-              <span className="provider-chip">OpenAI</span>
+              <span className="provider-chip">{model}</span>
             </div>
 
             <div className="ai-target">
@@ -766,7 +885,15 @@ export default function Workspace() {
               </label>
               <label>
                 Branch
-                <input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+                <input
+                  value={branch}
+                  onChange={(e) => {
+                    setBranch(e.target.value);
+                    setReviewBase("");
+                    setPrUrl("");
+                  }}
+                  placeholder="main"
+                />
               </label>
               <label>
                 Fine-grained token <span>(chỉ cần khi push/private repo)</span>
@@ -782,6 +909,16 @@ export default function Workspace() {
 
             <div className="settings-group">
               <div className="settings-title"><Sparkles size={17} /><strong>OpenAI</strong></div>
+              <label>
+                Model
+                <select value={model} onChange={(e) => setModel(e.target.value)}>
+                  <option value="gpt-5.3-codex">GPT-5.3 Codex — coding</option>
+                  <option value="gpt-5.6-luna">GPT-5.6 Luna — tiết kiệm</option>
+                  <option value="gpt-5.6-terra">GPT-5.6 Terra — cân bằng</option>
+                  <option value="gpt-5.6-sol">GPT-5.6 Sol — mạnh</option>
+                  <option value="gpt-6-astra">GPT-6 Astra — cao nhất</option>
+                </select>
+              </label>
               <label>
                 API key <span>(để trống nếu server đã có OPENAI_API_KEY)</span>
                 <input
