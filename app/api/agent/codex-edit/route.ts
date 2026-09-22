@@ -134,11 +134,20 @@ export async function POST(request: NextRequest) {
         `HEAD:${path}`,
       ]);
 
+      const blobSha = await run(sandbox, "git", [
+        "-C",
+        dir,
+        "rev-parse",
+        `HEAD:${path}`,
+      ]);
+
       files.push({
         path,
         content: buffer.toString("utf8"),
         originalContent: original.exitCode === 0 ? original.stdout : "",
         reason: "Codex đã thay đổi file này trong cloud workspace.",
+        sha: blobSha.exitCode === 0 ? blobSha.stdout.trim() : "",
+        size: buffer.length,
       });
     }
 
