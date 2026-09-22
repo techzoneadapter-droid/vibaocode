@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   ensurePublicRepo,
+  ensureCodexCli,
   getWorkspaceSandbox,
   installDependencies,
   repoDirectory,
@@ -58,8 +59,11 @@ export async function POST(request: NextRequest) {
 
     const sandbox = await getWorkspaceSandbox(workspaceId);
     const dir = await ensurePublicRepo(sandbox, repo, branch);
+    const codex = await ensureCodexCli(sandbox);
+    await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
+    const codexCommand = `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)}`;
 
-    const auth = await shell(sandbox, "codex login status 2>&1 || true");
+    const auth = await shell(sandbox, `${codexCommand} login status 2>&1 || true`);
     const connected =
       /logged in|authenticated|chatgpt|plan/i.test(auth.stdout) &&
       !/not logged|not authenticated/i.test(auth.stdout);
@@ -97,7 +101,7 @@ export async function POST(request: NextRequest) {
 
     const exec = await shell(
       sandbox,
-      `cd ${JSON.stringify(dir)} && cat .vibaocode-codex-prompt.txt | codex exec - --sandbox workspace-write --json > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
+      `cd ${JSON.stringify(dir)} && cat .vibaocode-codex-prompt.txt | ${codexCommand} exec - --sandbox workspace-write --json > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
     );
 
     const events = await shell(
@@ -156,7 +160,7 @@ export async function POST(request: NextRequest) {
     const checks = await runProjectChecks(sandbox, dir);
 
     return NextResponse.json({
-      model: "codex-chatgpt",
+      model: `codex-chatgpt • ${codex.version}`,
       summary:
         lastAgentMessage(events.stdout) ||
         (exec.exitCode === 0
