@@ -10,6 +10,10 @@ export function safeWorkspaceId(value: string) {
   return `vibaocode-${hash}`;
 }
 
+export function projectWorkspaceId(workspaceId: string, repo: string, branch: string) {
+  return `${workspaceId.trim()}::${repo.trim()}::${branch.trim()}`;
+}
+
 export function repoDirectory(repo: string, branch: string) {
   const hash = crypto
     .createHash("sha256")
@@ -204,10 +208,16 @@ export async function startDevServer(
 cd ${JSON.stringify(dir)}
 if command -v fuser >/dev/null 2>&1; then
   fuser -k 3000/tcp >/dev/null 2>&1 || true
-elif command -v lsof >/dev/null 2>&1; then
+fi
+if command -v lsof >/dev/null 2>&1; then
   OLD_PORT_PIDS="$(lsof -ti tcp:3000 2>/dev/null || true)"
   if [ -n "$OLD_PORT_PIDS" ]; then kill -9 $OLD_PORT_PIDS >/dev/null 2>&1 || true; fi
-elif [ -f .vibaocode-dev.pid ]; then
+fi
+OLD_DEV_PIDS="$(ps -eo pid=,args= 2>/dev/null | awk '
+  /vite([[:space:]]|$)|next dev|next start|npm run dev|npm run start|python3 -m http\.server 3000/ && !/awk/ { print $1 }
+' | tr '\n' ' ')"
+if [ -n "$OLD_DEV_PIDS" ]; then kill -9 $OLD_DEV_PIDS >/dev/null 2>&1 || true; fi
+if [ -f .vibaocode-dev.pid ]; then
   OLD_PID="$(cat .vibaocode-dev.pid 2>/dev/null || true)"
   if [ -n "$OLD_PID" ]; then kill -9 "$OLD_PID" >/dev/null 2>&1 || true; fi
 fi
