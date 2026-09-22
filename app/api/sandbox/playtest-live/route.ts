@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   ensurePublicRepo,
   getWorkspaceSandbox,
+  projectWorkspaceId,
   shell,
   startDevServer,
   validBranch,
@@ -215,7 +216,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sandbox = await getWorkspaceSandbox(workspaceId);
+    const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
     const toolsDir = "/vercel/sandbox/.vibaocode-tools";
 
     if (action === "start") {
