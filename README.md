@@ -1,20 +1,40 @@
 # Vibaocode
 
-A lightweight AI-assisted coding workspace that keeps GitHub as the source of truth and puts a mobile preview beside code review.
+Vibaocode is a lightweight, review-first AI coding workspace that keeps GitHub as the source of truth while running heavy code, previews, and tests in cloud sandboxes.
 
-## V1 features
+## Main workflow
 
-- Read a public GitHub repository without a token.
-- Read private repositories with a fine-grained GitHub token.
-- Browse repository files and edit text/code.
-- Ask OpenAI to propose a full-file replacement using a selectable model.
-- Review changes before applying them.
-- Create a safe review branch before editing.
-- Push approved changes to the review branch and open a pull request.
-- Review a deployed app in a mobile device frame.
-- Preview a selected standalone HTML file immediately.
-- Load project guidance from `PROJECT.md`.
-- Keep GitHub/OpenAI credentials in browser session storage only when entered through the UI.
+```
+GitHub
+  -> Load project
+  -> Run in Vercel Sandbox
+  -> Prompt AI agent
+  -> Live mobile preview
+  -> Auto Test / AI Play Test
+  -> Review diff
+  -> Review branch
+  -> Push
+  -> Pull Request
+```
+
+## Current features
+
+- GitHub repository browser and code editor.
+- Public repository reads without a token.
+- Fine-grained GitHub token support for private reads and writes.
+- Safe review branches and pull requests.
+- Project Mode for multi-file AI edits.
+- OpenAI API coding mode.
+- Official ChatGPT/Codex device authentication and subscription-backed coding agent.
+- Claude API Project Mode using Anthropic Messages API.
+- Gemini API Project Mode using Gemini structured output.
+- Persistent Vercel Sandbox runtime for public repositories.
+- Run and Review automatically start the target project.
+- Live Sync sends draft edits into the running sandbox.
+- Mobile preview from the sandbox dev-server URL.
+- Auto Test for lint, test, build, and HTTP smoke checks.
+- AI Play Test with safe browser interactions, canvas/game clicks, error collection, live screenshot frames, and replay.
+- Credentials entered in Settings stay in browser session storage and are never committed to Git.
 
 ## Run locally
 
@@ -27,29 +47,48 @@ Open `http://localhost:3000`.
 
 ## Environment
 
-Copy `.env.example` to `.env.local` if you want the server to provide the OpenAI key instead of entering it per browser session.
-
 ```env
-OPENAI_API_KEY=...
+OPENAI_API_KEY=
 OPENAI_MODEL=gpt-5.3-codex
 ```
 
-The UI can also accept an OpenAI API key for the current browser session.
+The app can also accept provider keys in Settings for the current browser session.
+
+## Cloud runtime
+
+Vibaocode uses `@vercel/sandbox`. On Vercel deployments, Sandbox authentication uses the deployment's Vercel identity/OIDC automatically.
+
+The cloud runtime currently clones public GitHub repositories. Private repositories can still be read/edited using the GitHub API, but private Sandbox clone/run is a roadmap item.
+
+## AI authentication
+
+### ChatGPT / Codex
+
+Vibaocode uses Codex's official device login flow inside a persistent cloud workspace. It does not read ChatGPT browser cookies.
+
+### OpenAI API
+
+Enter an OpenAI API key in Settings or configure `OPENAI_API_KEY` on the server.
+
+### Claude
+
+Project Mode supports Anthropic API keys and uses Claude Sonnet 4.6.
+
+### Gemini
+
+Project Mode supports Gemini API keys and uses Gemini structured JSON output. For remote/headless environments, API-key or Vertex authentication is preferred over browser Google-account sign-in.
 
 ## GitHub access
 
-Public repository reads work without authentication. To write changes or access a private repository, create a fine-grained GitHub personal access token with access only to the repositories you want Vibaocode to manage.
+Public repository reads work without authentication. For writes/private repositories, create a fine-grained GitHub token restricted to the repositories Vibaocode should manage.
 
-Do not commit access tokens or API keys.
+Do not commit access tokens or AI provider keys.
 
-## Deploy
+## Safety
 
-The project is designed for Vercel/Next.js deployment.
+- AI edits are review-first and are not pushed automatically.
+- Coding agents run inside isolated cloud sandboxes.
+- Account connections use official provider-supported authentication, not cookie/session scraping.
+- Browser play testing skips controls with destructive labels such as delete, purchase, logout, or reset.
 
-After deploying, set `OPENAI_API_KEY` and optionally `OPENAI_MODEL` in the deployment environment if you do not want to paste a key into the UI.
-
-## Current limitation
-
-The current version edits the currently selected file. It does not yet run the target repository inside a cloud sandbox. For application preview, paste an existing Vercel/GitHub Pages preview URL, or open a standalone HTML file.
-
-See `PROJECT.md` for the roadmap.
+See `PROJECT.md` for current limitations and roadmap.
