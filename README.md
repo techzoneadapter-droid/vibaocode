@@ -7,9 +7,10 @@ A lightweight AI-assisted coding workspace that keeps GitHub as the source of tr
 - Read a public GitHub repository without a token.
 - Read private repositories with a fine-grained GitHub token.
 - Browse repository files and edit text/code.
-- Ask OpenAI to propose a full-file replacement.
+- Ask OpenAI to propose a full-file replacement using a selectable model.
 - Review changes before applying them.
-- Push approved changes back to GitHub.
+- Create a safe review branch before editing.
+- Push approved changes to the review branch and open a pull request.
 - Review a deployed app in a mobile device frame.
 - Preview a selected standalone HTML file immediately.
 - Load project guidance from `PROJECT.md`.
@@ -30,7 +31,7 @@ Copy `.env.example` to `.env.local` if you want the server to provide the OpenAI
 
 ```env
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-6-astra
+OPENAI_MODEL=gpt-5.3-codex
 ```
 
 The UI can also accept an OpenAI API key for the current browser session.
@@ -49,6 +50,6 @@ After deploying, set `OPENAI_API_KEY` and optionally `OPENAI_MODEL` in the deplo
 
 ## Current limitation
 
-V1 edits the currently selected file. It does not yet run the target repository inside a cloud sandbox. For application preview, paste an existing Vercel/GitHub Pages preview URL, or open a standalone HTML file.
+The current version edits the currently selected file. It does not yet run the target repository inside a cloud sandbox. For application preview, paste an existing Vercel/GitHub Pages preview URL, or open a standalone HTML file.
 
 See `PROJECT.md` for the roadmap.
