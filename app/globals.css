@@ -2175,3 +2175,129 @@ button:disabled {
     width: min(94vw, 390px);
   }
 }
+
+
+.github-connect-button {
+  min-height: 36px;
+  border: 1px solid #2f3a45;
+  background: #12171d;
+  color: #d9e2ea;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.github-connect-button:hover {
+  border-color: #426050;
+  background: #151c20;
+  color: #c8fae7;
+}
+
+.github-account-mini {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #0c1014;
+  padding: 6px 7px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 29px;
+  align-items: center;
+  gap: 7px;
+}
+
+.github-account-mini img,
+.github-account-card img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #182029;
+}
+
+.github-account-mini > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.github-account-mini strong {
+  font-size: 10px;
+  color: #e2e9ef;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.github-account-mini span {
+  font-size: 8px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-select-label {
+  display: grid;
+  gap: 5px;
+  color: #768492;
+  font-size: 8.5px;
+  font-weight: 700;
+}
+
+.repo-quick select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  background: #0c0f13;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.github-account-card {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgba(52, 211, 153, 0.19);
+  background: rgba(52, 211, 153, 0.045);
+  border-radius: 10px;
+  padding: 8px;
+  margin-bottom: 10px;
+}
+
+.github-account-card img {
+  width: 34px;
+  height: 34px;
+}
+
+.github-account-card > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.github-account-card strong {
+  color: #e8f7f1;
+  font-size: 11px;
+}
+
+.github-account-card span {
+  color: #7e918c;
+  font-size: 8.5px;
+}
+
+.github-login-action {
+  width: 100%;
+  margin-bottom: 10px;
+}
