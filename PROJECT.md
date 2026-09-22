@@ -58,3 +58,17 @@ Vibaocode is a lightweight personal AI coding workspace for users who prefer to 
 - Visual click-to-component review and screenshot annotations.
 - More official coding-agent account connections where their provider supports remote/headless authentication.
 - Multi-agent session history and per-project memory.
+
+
+## Runtime hardening pass
+- Codex CLI is installed and cached automatically inside each persistent Vercel Sandbox instead of assuming a global binary exists.
+- ChatGPT/Codex account connection now uses a persistent CODEX_HOME and the official device-auth flow.
+- The UI keeps polling the auth session and shows the device code even when Codex emits it after the initial request.
+- Device-login UI includes copy-code, open-verification-page, detailed diagnostics, and explicit handling for disabled Device Code Authorization.
+- Codex account editing uses the same authenticated CLI installation and CODEX_HOME as the login flow.
+- Auto Test is self-contained: it installs project dependencies, starts the app, runs available lint/test/typecheck/build checks, and performs an HTTP smoke test.
+- Next.js 16 compatibility: the Vibaocode lint script uses TypeScript typechecking instead of the removed next lint command.
+- Playwright/Chromium is cached in the persistent Sandbox and prepared automatically.
+- AI Play installs project dependencies before testing and launches Chromium with cloud-safe flags.
+- AI Play now performs real drag gestures on canvas games in addition to safe clicks, making Phaser puzzle interaction testable.
+- Live AI Play exposes progress frames in the phone preview and keeps a replay after completion.
