@@ -58,32 +58,10 @@ export async function shell(
 }
 
 export async function ensureCodexCli(sandbox: Sandbox) {
-  const builtIn = await shell(
-    sandbox,
-    `if command -v codex >/dev/null 2>&1; then
-  BIN="$(command -v codex)"
-  echo "$BIN"
-  "$BIN" --version 2>&1
-fi`,
-  );
-
-  const builtInLines = builtIn.stdout
-    .trim()
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (builtIn.exitCode === 0 && builtInLines.length >= 2) {
-    return {
-      bin: builtInLines[0],
-      version: builtInLines[builtInLines.length - 1],
-      codexHome: "/vercel/sandbox/.codex",
-      source: "vercel-base-image" as const,
-    };
-  }
-
   const toolsDir = "/vercel/sandbox/.vibaocode-tools/codex";
   const bin = `${toolsDir}/node_modules/.bin/codex`;
+  const runtimeMarker = `${toolsDir}/.runtime-v4`;
+
   const setup = await shell(
     sandbox,
     `
@@ -91,9 +69,15 @@ set -e
 mkdir -p ${JSON.stringify(toolsDir)}
 cd ${JSON.stringify(toolsDir)}
 if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
-if [ ! -x node_modules/.bin/codex ]; then
+
+# Vibaocode intentionally uses its own managed Codex binary instead of the
+# Vercel base-image binary. Persistent Sandboxes can otherwise keep an older
+# Codex build for weeks and re-introduce Linux/bwrap regressions.
+if [ ! -x node_modules/.bin/codex ] || [ ! -f ${JSON.stringify(runtimeMarker)} ]; then
   npm install --no-audit --no-fund @openai/codex@latest >/tmp/vibaocode-codex-install.log 2>&1
+  touch ${JSON.stringify(runtimeMarker)}
 fi
+
 printf '%s\n' ${JSON.stringify(bin)}
 node_modules/.bin/codex --version
 `,
@@ -102,10 +86,10 @@ node_modules/.bin/codex --version
   if (setup.exitCode !== 0) {
     const log = await shell(
       sandbox,
-      "tail -n 120 /tmp/vibaocode-codex-install.log 2>/dev/null || true",
+      "tail -n 160 /tmp/vibaocode-codex-install.log 2>/dev/null || true",
     );
     throw new Error(
-      `Không tìm thấy Codex CLI có sẵn và cũng không cài được bản dự phòng.\n${log.stdout || setup.stderr || setup.stdout}`,
+      `Không cài/cập nhật được Codex CLI do Vibaocode quản lý.\n${log.stdout || setup.stderr || setup.stdout}`,
     );
   }
 
@@ -119,7 +103,7 @@ node_modules/.bin/codex --version
     bin: lines[0] || bin,
     version: lines[lines.length - 1] || "codex",
     codexHome: "/vercel/sandbox/.codex",
-    source: "npm-fallback" as const,
+    source: "vibaocode-managed-npm" as const,
   };
 }
 
