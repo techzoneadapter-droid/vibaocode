@@ -405,6 +405,7 @@ export default function Workspace() {
       setProposal("");
       setProposalSummary("");
       setTab("code");
+      setWorkspaceView("code");
       setNotice(`Đã mở ${data.path}`);
       if (fileExtension(node.path) === "html") setPreviewMode("html");
     } catch (err) {
@@ -442,6 +443,7 @@ export default function Workspace() {
         setPreviewUrl(data.previewUrl);
         setPreviewMode("url");
         setPreviewKey((value) => value + 1);
+        setWorkspaceView("preview");
       }
       setNotice(data.running ? "Dự án đang chạy trong Cloud Sandbox" : "Server chưa sẵn sàng");
       return Boolean(data.running);
@@ -635,6 +637,7 @@ export default function Workspace() {
   async function openReview() {
     if (!sandboxRunning) await runCloudProject();
     setTab("diff");
+    setWorkspaceView("changes");
   }
 
   async function connectCodexAccount() {
@@ -722,6 +725,7 @@ export default function Workspace() {
       setProposal(data.content);
       setProposalSummary(data.summary);
       setTab("diff");
+      setWorkspaceView("changes");
       setNotice(`AI đã tạo đề xuất bằng ${data.model}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "AI request failed.");
@@ -823,6 +827,7 @@ export default function Workspace() {
     setProposal(item.content);
     setProposalSummary(item.reason);
     setTab("diff");
+    setWorkspaceView("changes");
     setNotice(`Đang review đề xuất cho ${item.path}`);
   }
 
@@ -833,6 +838,7 @@ export default function Workspace() {
     setProposal("");
     setProposalSummary("");
     setTab("code");
+    setWorkspaceView("preview");
     setNotice("Đã áp dụng đề xuất vào bản nháp. Chưa push GitHub.");
     if (selected && sandboxRunning) {
       await syncDraft(selected.path, nextContent);
