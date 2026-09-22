@@ -223,6 +223,137 @@ setTimeout(() => {
 `;
 }
 
+function usageReaderSource() {
+  return String.raw`
+const { spawn } = require("child_process");
+
+const bin = process.argv[2];
+const codexHome = process.argv[3];
+const child = spawn(bin, ["app-server", "--stdio"], {
+  env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: "error" },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+
+let buffer = "";
+let rateLimits = null;
+let usage = null;
+let initialized = false;
+let finished = false;
+
+function send(message) {
+  child.stdin.write(JSON.stringify(message) + "\n");
+}
+
+function finish() {
+  if (finished) return;
+  finished = true;
+  process.stdout.write(JSON.stringify({ rateLimits, usage }));
+  try { child.kill("SIGTERM"); } catch {}
+  setTimeout(() => process.exit(0), 100);
+}
+
+child.stdout.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  const lines = buffer.split(/\r?\n/);
+  buffer = lines.pop() || "";
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (message.id === 1 && !initialized) {
+      initialized = true;
+      send({ method: "initialized" });
+      send({ method: "account/rateLimits/read", id: 6 });
+      send({ method: "account/usage/read", id: 7 });
+      continue;
+    }
+
+    if (message.id === 6) {
+      rateLimits = message.result || { error: message.error || null };
+    }
+
+    if (message.id === 7) {
+      usage = message.result || { error: message.error || null };
+    }
+
+    if (rateLimits !== null && usage !== null) {
+      finish();
+    }
+  }
+});
+
+child.on("error", (error) => {
+  process.stdout.write(JSON.stringify({ error: error.message }));
+  process.exit(1);
+});
+
+send({
+  method: "initialize",
+  id: 1,
+  params: {
+    clientInfo: {
+      name: "vibaocode-usage",
+      title: "Vibaocode Usage",
+      version: "0.1.0",
+    },
+  },
+});
+
+setTimeout(() => {
+  if (!finished) finish();
+}, 12000);
+`;
+}
+
+async function readCodexUsage(
+  sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>,
+  codex: Awaited<ReturnType<typeof ensureCodexCli>>,
+) {
+  const scriptPath = "/tmp/vibaocode-codex-usage.cjs";
+  const scriptBase64 = Buffer.from(usageReaderSource(), "utf8").toString("base64");
+
+  await shell(
+    sandbox,
+    `printf '%s' ${JSON.stringify(scriptBase64)} | base64 -d > ${JSON.stringify(scriptPath)}`,
+  );
+
+  const result = await shell(
+    sandbox,
+    `timeout 18s node ${JSON.stringify(scriptPath)} ${JSON.stringify(codex.bin)} ${JSON.stringify(codex.codexHome)} 2>/tmp/vibaocode-codex-usage.err || true`,
+  );
+
+  if (!result.stdout.trim()) {
+    const error = await shell(
+      sandbox,
+      "tail -n 80 /tmp/vibaocode-codex-usage.err 2>/dev/null || true",
+    );
+    return {
+      rateLimits: null,
+      usage: null,
+      error: error.stdout.trim() || "Codex chưa trả về dữ liệu hạn mức.",
+    };
+  }
+
+  try {
+    return JSON.parse(result.stdout.trim());
+  } catch {
+    return {
+      rateLimits: null,
+      usage: null,
+      error: "Không đọc được dữ liệu hạn mức Codex.",
+      raw: result.stdout.slice(-3000),
+    };
+  }
+}
+
 async function readState(sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>) {
   const result = await shell(
     sandbox,
@@ -353,6 +484,35 @@ echo $! > ${JSON.stringify(PID_FILE)}
         version: codex.version,
         source: codex.source,
         detail: status.stdout.trim() || status.stderr.trim(),
+      });
+    }
+
+    if (action === "usage") {
+      const codex = await ensureCodexCli(sandbox);
+      await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
+
+      const status = await shell(
+        sandbox,
+        `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} login status 2>&1 || true`,
+      );
+      const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
+
+      if (!connected) {
+        return NextResponse.json(
+          {
+            connected: false,
+            error: "Codex chưa đăng nhập ChatGPT.",
+          },
+          { status: 401 },
+        );
+      }
+
+      const snapshot = await readCodexUsage(sandbox, codex);
+      return NextResponse.json({
+        connected: true,
+        version: codex.version,
+        source: codex.source,
+        ...snapshot,
       });
     }
 
