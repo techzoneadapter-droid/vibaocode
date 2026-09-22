@@ -94,6 +94,7 @@ export async function POST(request: NextRequest) {
 
     if (action === "test") {
       await ensurePublicRepo(sandbox, repo, branch);
+      await installDependencies(sandbox, dir);
       const server = await startDevServer(sandbox, dir);
       const result = await runProjectChecks(sandbox, dir);
       const logs = await shell(
@@ -106,6 +107,12 @@ export async function POST(request: NextRequest) {
         serverRunning: server.ok,
         ...result,
         serverLogs: logs.stdout,
+        phases: [
+          { name: "dependencies", passed: true },
+          { name: "dev-server", passed: server.ok },
+          { name: "project-checks", passed: result.checks.every((check) => check.exitCode === 0) },
+          { name: "http-smoke", passed: !["000", "unavailable", ""].includes(result.smokeStatus) },
+        ],
       });
     }
 
