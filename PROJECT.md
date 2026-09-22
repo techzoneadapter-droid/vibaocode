@@ -22,18 +22,19 @@ Vibaocode is a lightweight personal AI coding workspace for users who prefer to 
 - Prefer small, reversible edits.
 - Accessibility and responsive layout are required.
 
-## Current V1
+## Current
 - Public GitHub repository reading without a token.
 - Fine-grained GitHub token for private repositories and writes.
 - File tree and plain text/code editor.
 - Review view comparing current GitHub file and draft/AI proposal.
+- Safe review branches created from the UI.
+- Pull requests opened from the UI after reviewed changes are pushed.
 - Mobile preview using an external URL or the currently opened HTML file.
-- OpenAI-powered single-file editing.
+- OpenAI-powered single-file editing with selectable coding/general models.
 - Session-only credential storage in the browser.
 
 ## Planned next
 - GitHub OAuth/App connection.
-- Create feature branches and pull requests from the UI.
 - Multi-file AI agent.
 - Vercel preview deployments and automatic preview URLs.
 - Visual click-to-component review.
