@@ -297,6 +297,14 @@ export default function Workspace() {
       ? Boolean(selected && prompt.trim() && editorContent)
       : Boolean(treeItems.length && prompt.trim());
 
+  useEffect(() => {
+    if (!autoSync || !sandboxRunning || !dirty || !selected || !workspaceId) return;
+    const timer = window.setTimeout(() => {
+      void syncDraft(selected.path, editorContent);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [autoSync, sandboxRunning, dirty, selected?.path, editorContent, workspaceId, repo, branch]);
+
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
