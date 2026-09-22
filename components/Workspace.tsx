@@ -218,7 +218,7 @@ export default function Workspace() {
   const [githubToken, setGithubToken] = useState("");
   const [openAIKey, setOpenAIKey] = useState("");
   const [model, setModel] = useState("gpt-5.3-codex");
-  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account">("openai-api");
+  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api">("openai-api");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [previewUrl, setPreviewUrl] = useState("https://vibaocode.vercel.app");
@@ -286,7 +286,9 @@ export default function Workspace() {
       if (data.githubToken) setGithubToken(data.githubToken);
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
       if (data.model) setModel(data.model);
-      if (data.aiProvider === "codex-account" || data.aiProvider === "openai-api") setAiProvider(data.aiProvider);
+      if (["codex-account","openai-api","claude-api","gemini-api"].includes(data.aiProvider)) {
+        setAiProvider(data.aiProvider);
+      }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
       if (data.geminiKey) setGeminiKey(data.geminiKey);
       if (typeof data.autoSync === "boolean") setAutoSync(data.autoSync);
@@ -675,7 +677,20 @@ export default function Workspace() {
 
     try {
       const useCodexAccount = aiProvider === "codex-account";
-      const response = await fetch(useCodexAccount ? "/api/agent/codex-edit" : "/api/ai/project", {
+      const useExternalProvider = aiProvider === "claude-api" || aiProvider === "gemini-api";
+
+      if (useCodexAccount && !sandboxRunning) {
+        const started = await runCloudProject();
+        if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
+      }
+
+      const endpoint = useCodexAccount
+        ? "/api/agent/codex-edit"
+        : useExternalProvider
+          ? "/api/ai/provider-project"
+          : "/api/ai/project";
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
@@ -686,15 +701,25 @@ export default function Workspace() {
                 branch,
                 prompt,
               }
-            : {
-                repo,
-                branch,
-                githubToken,
-                apiKey: openAIKey,
-                model,
-                prompt,
-                projectContext,
-              }
+            : useExternalProvider
+              ? {
+                  provider: aiProvider === "claude-api" ? "anthropic" : "gemini",
+                  apiKey: aiProvider === "claude-api" ? anthropicKey : geminiKey,
+                  repo,
+                  branch,
+                  githubToken,
+                  prompt,
+                  projectContext,
+                }
+              : {
+                  repo,
+                  branch,
+                  githubToken,
+                  apiKey: openAIKey,
+                  model,
+                  prompt,
+                  projectContext,
+                }
         ),
       });
       const data = await response.json();
@@ -1280,7 +1305,13 @@ export default function Workspace() {
                 <strong>Prompt sửa code</strong>
               </div>
               <span className="provider-chip">
-                {aiProvider === "codex-account" ? "ChatGPT / Codex" : model}
+                {aiProvider === "codex-account"
+                  ? "ChatGPT / Codex"
+                  : aiProvider === "claude-api"
+                    ? "Claude Sonnet 4.6"
+                    : aiProvider === "gemini-api"
+                      ? "Gemini 3.8 Flash"
+                      : model}
               </span>
             </div>
 
@@ -1430,9 +1461,18 @@ export default function Workspace() {
               <div className="settings-title"><Sparkles size={17} /><strong>AI Coding Agent</strong></div>
               <label>
                 Cách kết nối
-                <select value={aiProvider} onChange={(e) => setAiProvider(e.target.value as "openai-api" | "codex-account")}>
-                  <option value="openai-api">OpenAI API</option>
+                <select
+                  value={aiProvider}
+                  onChange={(e) =>
+                    setAiProvider(
+                      e.target.value as "openai-api" | "codex-account" | "claude-api" | "gemini-api"
+                    )
+                  }
+                >
                   <option value="codex-account">ChatGPT / Codex account</option>
+                  <option value="openai-api">OpenAI API</option>
+                  <option value="claude-api">Claude API</option>
+                  <option value="gemini-api">Gemini API</option>
                 </select>
               </label>
               {aiProvider === "codex-account" ? (
@@ -1454,58 +1494,71 @@ export default function Workspace() {
                     </button>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
                   </div>
+                  <p className="settings-hint">
+                    Dùng luồng device login chính thức của Codex. Vibaocode không lấy cookie phiên ChatGPT.
+                  </p>
                 </div>
+              ) : aiProvider === "claude-api" ? (
+                <>
+                  <label>
+                    Claude model
+                    <input value="claude-sonnet-4-6" readOnly />
+                  </label>
+                  <label>
+                    Anthropic API key
+                    <input
+                      type="password"
+                      value={anthropicKey}
+                      onChange={(e) => setAnthropicKey(e.target.value)}
+                      placeholder="sk-ant-…"
+                      autoComplete="off"
+                    />
+                  </label>
+                </>
+              ) : aiProvider === "gemini-api" ? (
+                <>
+                  <label>
+                    Gemini model
+                    <input value="gemini-3.8-flash" readOnly />
+                  </label>
+                  <label>
+                    Gemini API key
+                    <input
+                      type="password"
+                      value={geminiKey}
+                      onChange={(e) => setGeminiKey(e.target.value)}
+                      placeholder="AIza…"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <p className="settings-hint">
+                    Với workspace cloud/headless, Gemini chính thức khuyến nghị API key hoặc Vertex AI thay vì đăng nhập Google tương tác.
+                  </p>
+                </>
               ) : (
                 <>
-              <label>
-                Model
-                <select value={model} onChange={(e) => setModel(e.target.value)}>
-                  <option value="gpt-5.3-codex">GPT-5.3 Codex — coding</option>
-                  <option value="gpt-5.6-luna">GPT-5.6 Luna — tiết kiệm</option>
-                  <option value="gpt-5.6-terra">GPT-5.6 Terra — cân bằng</option>
-                  <option value="gpt-5.6-sol">GPT-5.6 Sol — mạnh</option>
-                  <option value="gpt-6-astra">GPT-6 Astra — cao nhất</option>
-                </select>
-              </label>
-              <label>
-                API key <span>(để trống nếu server đã có OPENAI_API_KEY)</span>
-                <input
-                  type="password"
-                  value={openAIKey}
-                  onChange={(e) => setOpenAIKey(e.target.value)}
-                  placeholder="sk-…"
-                  autoComplete="off"
-                />
-              </label>
+                  <label>
+                    Model
+                    <select value={model} onChange={(e) => setModel(e.target.value)}>
+                      <option value="gpt-5.3-codex">GPT-5.3 Codex — coding</option>
+                      <option value="gpt-5.6-luna">GPT-5.6 Luna — tiết kiệm</option>
+                      <option value="gpt-5.6-terra">GPT-5.6 Terra — cân bằng</option>
+                      <option value="gpt-5.6-sol">GPT-5.6 Sol — mạnh</option>
+                      <option value="gpt-6-astra">GPT-6 Astra — cao nhất</option>
+                    </select>
+                  </label>
+                  <label>
+                    API key <span>(để trống nếu server đã có OPENAI_API_KEY)</span>
+                    <input
+                      type="password"
+                      value={openAIKey}
+                      onChange={(e) => setOpenAIKey(e.target.value)}
+                      placeholder="sk-…"
+                      autoComplete="off"
+                    />
+                  </label>
                 </>
               )}
-
-              <details className="other-provider-box">
-                <summary>Kết nối AI khác</summary>
-                <label>
-                  Anthropic API key
-                  <input
-                    type="password"
-                    value={anthropicKey}
-                    onChange={(e) => setAnthropicKey(e.target.value)}
-                    placeholder="sk-ant-…"
-                    autoComplete="off"
-                  />
-                </label>
-                <label>
-                  Gemini auth key
-                  <input
-                    type="password"
-                    value={geminiKey}
-                    onChange={(e) => setGeminiKey(e.target.value)}
-                    placeholder="AIza… / auth key"
-                    autoComplete="off"
-                  />
-                </label>
-                <p className="settings-hint">
-                  Khóa Anthropic/Gemini được lưu cho phiên trình duyệt. Adapter chạy code cho hai provider này sẽ được bật ở bước tiếp theo.
-                </p>
-              </details>
             </div>
 
             <div className="settings-group">
