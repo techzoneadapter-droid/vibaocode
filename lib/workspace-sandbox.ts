@@ -98,6 +98,17 @@ export async function ensurePublicRepo(
         "Không clone được repository vào Sandbox. Run Cloud hiện hỗ trợ repo GitHub public; repo private vẫn có thể đọc/sửa qua GitHub token trong editor.",
       );
     }
+  } else {
+    const dirty = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git status --porcelain`,
+    );
+    if (!dirty.stdout.trim()) {
+      await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && git fetch origin ${JSON.stringify(branch)} --depth=1 && git reset --hard origin/${JSON.stringify(branch)}`,
+      );
+    }
   }
 
   return dir;
@@ -191,10 +202,16 @@ export async function startDevServer(
 
   const command = `
 cd ${JSON.stringify(dir)}
-if [ -f .vibaocode-dev.pid ]; then
+if command -v fuser >/dev/null 2>&1; then
+  fuser -k 3000/tcp >/dev/null 2>&1 || true
+elif command -v lsof >/dev/null 2>&1; then
+  OLD_PORT_PIDS="$(lsof -ti tcp:3000 2>/dev/null || true)"
+  if [ -n "$OLD_PORT_PIDS" ]; then kill -9 $OLD_PORT_PIDS >/dev/null 2>&1 || true; fi
+elif [ -f .vibaocode-dev.pid ]; then
   OLD_PID="$(cat .vibaocode-dev.pid 2>/dev/null || true)"
-  if [ -n "$OLD_PID" ]; then kill "$OLD_PID" >/dev/null 2>&1 || true; fi
+  if [ -n "$OLD_PID" ]; then kill -9 "$OLD_PID" >/dev/null 2>&1 || true; fi
 fi
+sleep 1
 nohup bash -lc ${JSON.stringify(startCommand)} > .vibaocode-dev.log 2>&1 < /dev/null &
 echo $! > .vibaocode-dev.pid
 for i in $(seq 1 30); do
