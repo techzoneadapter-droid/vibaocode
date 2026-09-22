@@ -243,6 +243,7 @@ export default function Workspace() {
   const [workspaceId, setWorkspaceId] = useState("");
   const [sandboxRunning, setSandboxRunning] = useState(false);
   const [sandboxName, setSandboxName] = useState("");
+  const [sandboxRevision, setSandboxRevision] = useState("");
   const [runLogs, setRunLogs] = useState("");
   const [testSummary, setTestSummary] = useState("");
   const [runLoading, setRunLoading] = useState(false);
@@ -441,6 +442,7 @@ export default function Workspace() {
     setError("");
     setSandboxRunning(false);
     setSandboxName("");
+    setSandboxRevision("");
     setPreviewUrl("");
     setRunLogs("");
     setTestSummary("");
@@ -541,6 +543,7 @@ export default function Workspace() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không chạy được dự án.");
       setSandboxName(data.sandboxName || "");
+      setSandboxRevision(data.revision || "");
       setSandboxRunning(Boolean(data.running));
       setRunLogs(data.logs || "");
       if (data.previewUrl) {
@@ -1689,7 +1692,7 @@ export default function Workspace() {
                 <div className="runtime-console drawer-console">
                   <div className="runtime-console-head">
                     <strong>Cloud Runtime</strong>
-                    <span>{sandboxName || "sandbox"} • live sync {autoSync ? "ON" : "OFF"}</span>
+                    <span>{sandboxName || "sandbox"}{sandboxRevision ? ` • ${sandboxRevision}` : ""} • live sync {autoSync ? "ON" : "OFF"}</span>
                   </div>
                   {testSummary ? <pre>{testSummary}</pre> : null}
                   {runLogs ? <details><summary>Server logs</summary><pre>{runLogs}</pre></details> : null}
