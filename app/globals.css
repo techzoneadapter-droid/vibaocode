@@ -1456,3 +1456,45 @@ button:disabled {
   color: #8492a1;
   font: 8px/1.45 "SFMono-Regular", Consolas, monospace;
 }
+
+
+.live-test-status {
+  width: min(270px, calc(100% - 30px));
+  margin: 8px auto 0;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  background: rgba(52, 211, 153, 0.055);
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #a9c8bc;
+  font-size: 8.5px;
+}
+
+.live-test-status strong {
+  color: #d7faec;
+}
+
+.live-test-status > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 9px rgba(52, 211, 153, 0.65);
+  animation: livePulse 1.1s ease-in-out infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
