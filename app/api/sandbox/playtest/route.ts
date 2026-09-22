@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   ensurePublicRepo,
+  ensureBrowserTester,
   getWorkspaceSandbox,
+  installDependencies,
   projectWorkspaceId,
   repoDirectory,
   shell,
@@ -88,6 +90,7 @@ export async function POST(request: NextRequest) {
 
     const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
     const dir = await ensurePublicRepo(sandbox, repo, branch);
+    await installDependencies(sandbox, dir);
     const server = await startDevServer(sandbox, dir);
 
     if (!server.ok) {
@@ -100,38 +103,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const toolsDir = "/vercel/sandbox/.vibaocode-tools";
-    const setup = await shell(
-      sandbox,
-      `
-set -e
-mkdir -p ${JSON.stringify(toolsDir)}
-cd ${JSON.stringify(toolsDir)}
-if [ ! -f package.json ]; then npm init -y >/dev/null 2>&1; fi
-if [ ! -d node_modules/playwright ]; then
-  npm install playwright >/dev/null 2>&1
-fi
-if [ ! -f .chromium-ready ]; then
-  npx playwright install --with-deps chromium >/tmp/vibaocode-playwright-install.log 2>&1
-  touch .chromium-ready
-fi
-`,
-    );
-
-    if (setup.exitCode !== 0) {
-      const installLog = await shell(
-        sandbox,
-        "tail -n 160 /tmp/vibaocode-playwright-install.log 2>/dev/null || true",
-      );
-      return NextResponse.json(
-        {
-          error: "Không cài được browser tester trong Sandbox.",
-          detail: installLog.stdout || setup.stderr || setup.stdout,
-        },
-        { status: 500 },
-      );
-    }
-
+    const toolsDir = await ensureBrowserTester(sandbox);
     const scriptPath = `${toolsDir}/playtest.mjs`;
     const script = `
 import { chromium } from "playwright";
@@ -141,7 +113,10 @@ const outDir = process.argv[3];
 const fs = await import("node:fs/promises");
 await fs.mkdir(outDir, { recursive: true });
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+});
 const context = await browser.newContext({
   viewport: { width: 390, height: 844 },
   deviceScaleFactor: 1,
@@ -201,8 +176,23 @@ if (await canvas.isVisible().catch(() => false)) {
     for (const [rx, ry] of points) {
       await page.mouse.click(box.x + box.width * rx, box.y + box.height * ry);
       actions.push({ type: "canvas-click", x: rx, y: ry });
-      await page.waitForTimeout(650);
+      await page.waitForTimeout(500);
       await snap("canvas-" + actions.length);
+    }
+
+    const drags = [
+      [[0.2, 0.81], [0.25, 0.42]],
+      [[0.5, 0.81], [0.5, 0.36]],
+      [[0.8, 0.81], [0.72, 0.48]],
+    ];
+    for (const [[sx, sy], [tx, ty]] of drags) {
+      actions.push({ type: "canvas-drag", from: [sx, sy], to: [tx, ty] });
+      await page.mouse.move(box.x + box.width * sx, box.y + box.height * sy);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * tx, box.y + box.height * ty, { steps: 14 });
+      await page.mouse.up();
+      await page.waitForTimeout(700);
+      await snap("drag-" + actions.length);
     }
   }
 }
