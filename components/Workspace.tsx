@@ -231,6 +231,8 @@ export default function Workspace() {
   const [testLoading, setTestLoading] = useState(false);
   const [playTestLoading, setPlayTestLoading] = useState(false);
   const [playScreenshots, setPlayScreenshots] = useState<string[]>([]);
+  const [liveTestImage, setLiveTestImage] = useState("");
+  const [liveTestLabel, setLiveTestLabel] = useState("");
   const [playStep, setPlayStep] = useState(0);
   const [playReport, setPlayReport] = useState("");
   const [visualReview, setVisualReview] = useState("");
@@ -522,45 +524,105 @@ export default function Workspace() {
       return;
     }
     setPlayTestLoading(true);
+    setPlayScreenshots([]);
+    setLiveTestImage("");
+    setLiveTestLabel("Đang khởi động browser tester…");
+    setPlayReport("");
+    setVisualReview("");
     setError("");
-    setNotice("Browser Tester đang mở app và tự thao tác thử…");
+    setNotice("AI đang tự chơi thử — bạn có thể xem trực tiếp trong khung điện thoại…");
+
     try {
-      const response = await fetch("/api/sandbox/playtest", {
+      const startResponse = await fetch("/api/sandbox/playtest-live", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          action: "start",
           workspaceId,
           repo,
           branch,
-          apiKey: openAIKey,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || data.detail || "Play test failed.");
+      const startData = await startResponse.json();
+      if (!startResponse.ok) {
+        throw new Error(startData.error || startData.detail || "Không bắt đầu được live play test.");
+      }
 
-      if (data.previewUrl) {
-        setPreviewUrl(data.previewUrl);
+      if (startData.previewUrl) {
+        setPreviewUrl(startData.previewUrl);
         setSandboxRunning(true);
       }
-      const shots = Array.isArray(data.screenshots) ? data.screenshots : [];
+      setSandboxName(startData.sandboxName || sandboxName);
+      setPreviewView("replay");
+
+      const runId = String(startData.runId || "");
+      if (!runId) throw new Error("Play tester không trả về runId.");
+
+      let finished = false;
+      let finalData: any = null;
+
+      for (let i = 0; i < 90; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 850));
+        const statusResponse = await fetch("/api/sandbox/playtest-live", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "status",
+            workspaceId,
+            repo,
+            branch,
+            runId,
+          }),
+        });
+        const statusData = await statusResponse.json();
+        if (!statusResponse.ok) {
+          throw new Error(statusData.error || "Không đọc được trạng thái play test.");
+        }
+
+        finalData = statusData;
+        if (statusData.currentImage) setLiveTestImage(statusData.currentImage);
+        if (statusData.state?.label) setLiveTestLabel(statusData.state.label);
+
+        const status = statusData.state?.status;
+        if (status === "completed" || status === "failed") {
+          finished = true;
+          break;
+        }
+      }
+
+      if (!finished) {
+        throw new Error("AI Play Test chạy quá lâu. Bạn có thể thử lại sau.");
+      }
+
+      const state = finalData?.state || {};
+      const shots = Array.isArray(finalData?.screenshots) ? finalData.screenshots : [];
       setPlayScreenshots(shots);
       setPlayStep(Math.max(0, shots.length - 1));
-      setPreviewView(shots.length ? "replay" : "live");
-      const report = data.report || {};
+
+      const actions = Array.isArray(state.actions) ? state.actions : [];
+      const consoleErrors = Array.isArray(state.consoleErrors) ? state.consoleErrors : [];
+      const pageErrors = Array.isArray(state.pageErrors) ? state.pageErrors : [];
       setPlayReport(
         [
-          `Trang: ${report.title || "(không có title)"}`,
-          `Actions: ${(report.actions || []).length}`,
-          `Console errors: ${(report.consoleErrors || []).length}`,
-          `Page errors: ${(report.pageErrors || []).length}`,
-          ...(report.consoleErrors || []).slice(0, 6).map((item: string) => `console: ${item}`),
-          ...(report.pageErrors || []).slice(0, 6).map((item: string) => `page: ${item}`),
-        ].join("\n")
+          `Trạng thái: ${state.status || "unknown"}`,
+          `Trang: ${state.title || "(không có title)"}`,
+          `Actions: ${actions.length}`,
+          `Console errors: ${consoleErrors.length}`,
+          `Page errors: ${pageErrors.length}`,
+          ...consoleErrors.slice(0, 6).map((item: string) => `console: ${item}`),
+          ...pageErrors.slice(0, 6).map((item: string) => `page: ${item}`),
+          state.error ? `tester: ${state.error}` : "",
+        ].filter(Boolean).join("\n")
       );
-      setVisualReview(data.visualReview || "");
-      setNotice("AI Play Test đã hoàn tất — xem Test Replay");
+
+      setLiveTestLabel(state.status === "completed" ? "Hoàn tất" : "Tester gặp lỗi");
+      setNotice(
+        state.status === "completed"
+          ? "AI Play Test hoàn tất — bạn có thể xem lại từng bước"
+          : "AI Play Test phát hiện lỗi"
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Play test failed.");
+      setError(err instanceof Error ? err.message : "Live play test failed.");
       setNotice("AI Play Test gặp lỗi");
     } finally {
       setPlayTestLoading(false);
@@ -1225,7 +1287,7 @@ export default function Workspace() {
             <div className="device-label">
               <MonitorSmartphone size={14} />
               {device.width} × {device.height}
-              {playScreenshots.length ? (
+              {(playScreenshots.length || liveTestImage) ? (
                 <span className="preview-view-toggle">
                   <button
                     className={previewView === "live" ? "active" : ""}
@@ -1250,11 +1312,15 @@ export default function Workspace() {
               style={{ aspectRatio: `${device.width} / ${device.height}` }}
             >
               <div className="phone-speaker" />
-              {previewView === "replay" && playScreenshots.length ? (
+              {previewView === "replay" && (liveTestImage || playScreenshots.length) ? (
                 <img
                   className="replay-image"
-                  src={playScreenshots[Math.min(playStep, playScreenshots.length - 1)]}
-                  alt={`Play test step ${playStep + 1}`}
+                  src={
+                    playTestLoading && liveTestImage
+                      ? liveTestImage
+                      : playScreenshots[Math.min(playStep, playScreenshots.length - 1)] || liveTestImage
+                  }
+                  alt={playTestLoading ? "Live AI play test" : `Play test step ${playStep + 1}`}
                 />
               ) : previewMode === "html" && htmlPreview ? (
                 <iframe key={`html-${previewKey}`} title="HTML preview" srcDoc={htmlPreview} />
@@ -1269,7 +1335,15 @@ export default function Workspace() {
               )}
             </div>
 
-            {previewView === "replay" && playScreenshots.length ? (
+            {playTestLoading && liveTestLabel ? (
+              <div className="live-test-status">
+                <span className="live-dot" />
+                <strong>AI đang test:</strong>
+                <span>{liveTestLabel}</span>
+              </div>
+            ) : null}
+
+            {!playTestLoading && previewView === "replay" && playScreenshots.length ? (
               <div className="replay-controls">
                 <button
                   onClick={() => setPlayStep((value) => Math.max(0, value - 1))}
