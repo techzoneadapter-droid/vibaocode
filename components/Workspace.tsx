@@ -55,6 +55,15 @@ type Device = {
   height: number;
 };
 
+type ProjectProposal = {
+  path: string;
+  content: string;
+  reason: string;
+  originalContent: string;
+  sha: string;
+  size: number;
+};
+
 const devices: Device[] = [
   { label: "Android Small", width: 360, height: 800 },
   { label: "Pixel", width: 390, height: 844 },
@@ -209,7 +218,11 @@ export default function Workspace() {
   const [githubToken, setGithubToken] = useState("");
   const [openAIKey, setOpenAIKey] = useState("");
   const [model, setModel] = useState("gpt-5.3-codex");
-  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("https://vibaocode.vercel.app");
+  const [aiScope, setAiScope] = useState<"file" | "project">("project");
+  const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
+  const [projectSummary, setProjectSummary] = useState("");
+  const [projectPlan, setProjectPlan] = useState("");
   const [reviewBase, setReviewBase] = useState("");
   const [prUrl, setPrUrl] = useState("");
   const [treeItems, setTreeItems] = useState<RepoItem[]>([]);
@@ -253,7 +266,10 @@ export default function Workspace() {
 
   const tree = useMemo(() => buildTree(treeItems), [treeItems]);
   const dirty = Boolean(selected) && editorContent !== originalContent;
-  const aiReady = Boolean(selected && prompt.trim() && editorContent);
+  const aiReady =
+    aiScope === "file"
+      ? Boolean(selected && prompt.trim() && editorContent)
+      : Boolean(treeItems.length && prompt.trim());
 
   const saveSettings = () => {
     sessionStorage.setItem(
@@ -294,6 +310,9 @@ export default function Workspace() {
       setOriginalContent("");
       setProposal("");
       setProposalSummary("");
+      setProjectProposals([]);
+      setProjectSummary("");
+      setProjectPlan("");
       setNotice(`Đã tải ${data.items?.length || 0} mục từ ${repo}`);
 
       const projectFile = (data.items || []).find(
@@ -379,6 +398,54 @@ export default function Workspace() {
     } finally {
       setAiLoading(false);
     }
+  }
+
+  async function askProjectAI() {
+    if (!aiReady || aiScope !== "project") return;
+    setAiLoading(true);
+    setError("");
+    setProjectProposals([]);
+    setProjectSummary("");
+    setProjectPlan("");
+    setNotice("Project Agent đang tìm file liên quan…");
+
+    try {
+      const response = await fetch("/api/ai/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo,
+          branch,
+          githubToken,
+          apiKey: openAIKey,
+          model,
+          prompt,
+          projectContext,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Project Agent không xử lý được yêu cầu.");
+
+      setProjectProposals(data.files || []);
+      setProjectSummary(data.summary || "");
+      setProjectPlan(data.plan || "");
+      setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Project Agent failed.");
+      setNotice("Project Agent gặp lỗi");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  function reviewProjectProposal(item: ProjectProposal) {
+    setSelected({ path: item.path, sha: item.sha, size: item.size });
+    setOriginalContent(item.originalContent);
+    setEditorContent(item.originalContent);
+    setProposal(item.content);
+    setProposalSummary(item.reason);
+    setTab("diff");
+    setNotice(`Đang review đề xuất cho ${item.path}`);
   }
 
   function applyProposal() {
@@ -844,31 +911,91 @@ export default function Workspace() {
               <span className="provider-chip">{model}</span>
             </div>
 
+            <div className="ai-scope-row">
+              <div className="segmented">
+                <button
+                  className={aiScope === "project" ? "active" : ""}
+                  onClick={() => setAiScope("project")}
+                  type="button"
+                >
+                  <Sparkles size={14} /> Project
+                </button>
+                <button
+                  className={aiScope === "file" ? "active" : ""}
+                  onClick={() => setAiScope("file")}
+                  type="button"
+                >
+                  <FileCode2 size={14} /> File
+                </button>
+              </div>
+            </div>
+
             <div className="ai-target">
               <Bot size={15} />
-              <span>{selected?.path || "Chưa chọn file"}</span>
+              <span>
+                {aiScope === "project"
+                  ? treeItems.length
+                    ? `Toàn dự án • ${treeItems.filter((item) => item.type === "blob").length} files`
+                    : "Hãy Load repository trước"
+                  : selected?.path || "Chưa chọn file"}
+              </span>
             </div>
 
             <textarea
               className="prompt-box"
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Ví dụ: Làm giao diện mobile đẹp hơn, giữ nguyên logic hiện tại và không thêm dependency mới…"
+              placeholder={
+                aiScope === "project"
+                  ? "Ví dụ: Làm lại phần đăng nhập đẹp hơn. Tự tìm các file liên quan, không ảnh hưởng chức năng khác…"
+                  : "Ví dụ: Làm giao diện mobile đẹp hơn, giữ nguyên logic hiện tại và không thêm dependency mới…"
+              }
             />
+
+            {aiScope === "project" && (projectSummary || projectProposals.length) ? (
+              <div className="project-agent-result">
+                {projectSummary ? (
+                  <div className="project-agent-summary">
+                    <strong>Kế hoạch AI</strong>
+                    <p>{projectSummary}</p>
+                    {projectPlan ? <span>{projectPlan}</span> : null}
+                  </div>
+                ) : null}
+                <div className="project-file-list">
+                  {projectProposals.map((item) => (
+                    <button key={item.path} onClick={() => reviewProjectProposal(item)} type="button">
+                      <FileCode2 size={14} />
+                      <span>
+                        <strong>{item.path}</strong>
+                        <small>{item.reason}</small>
+                      </span>
+                      <Eye size={14} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             <div className="ai-foot">
               <button className="ghost-button" onClick={() => setSettingsOpen(true)} type="button">
                 <KeyRound size={14} />
                 API
               </button>
-              <button className="ai-button" onClick={askAI} disabled={!aiReady || aiLoading} type="button">
+              <button
+                className="ai-button"
+                onClick={aiScope === "project" ? askProjectAI : askAI}
+                disabled={!aiReady || aiLoading}
+                type="button"
+              >
                 {aiLoading ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-                Tạo bản sửa
+                {aiScope === "project" ? "Phân tích & sửa dự án" : "Tạo bản sửa"}
               </button>
             </div>
 
             <p className="privacy-note">
-              AI chỉ nhận file đang mở và PROJECT.md. Thay đổi luôn được review trước khi push.
+              {aiScope === "project"
+                ? "Project Agent tự chọn tối đa 6 file liên quan. Mỗi file vẫn phải được bạn review trước khi Apply/Push."
+                : "AI chỉ nhận file đang mở và PROJECT.md. Thay đổi luôn được review trước khi push."}
             </p>
           </div>
         </aside>
