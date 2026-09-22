@@ -261,7 +261,9 @@ export default function Workspace() {
   const [codexVerificationUrl, setCodexVerificationUrl] = useState("");
   const [codexUserCode, setCodexUserCode] = useState("");
   const [codexDetail, setCodexDetail] = useState("");
+  const [codexPhase, setCodexPhase] = useState("");
   const [codexConnecting, setCodexConnecting] = useState(false);
+  const [codexDiagnosing, setCodexDiagnosing] = useState(false);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
   const [projectSummary, setProjectSummary] = useState("");
@@ -771,6 +773,7 @@ export default function Workspace() {
     setCodexVerificationUrl("");
     setCodexUserCode("");
     setCodexDetail("");
+    setCodexPhase("starting");
     setError("");
     setNotice("Đang cài/khởi động Codex CLI và tạo mã thiết bị…");
 
@@ -787,6 +790,8 @@ export default function Workspace() {
       if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
       if (data.userCode) setCodexUserCode(data.userCode);
       if (data.detail) setCodexDetail(data.detail);
+      if (data.phase) setCodexPhase(data.phase);
+      if (data.phase) setCodexPhase(data.phase);
 
       if (data.verificationUrl && data.userCode) {
         window.open(data.verificationUrl, "_blank", "noopener,noreferrer");
@@ -795,7 +800,7 @@ export default function Workspace() {
         setNotice("Codex đang tạo mã thiết bị…");
       }
 
-      for (let i = 0; i < 100; i += 1) {
+      for (let i = 0; i < 290; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         const statusResponse = await fetch("/api/agent/codex-auth", {
           method: "POST",
@@ -810,6 +815,7 @@ export default function Workspace() {
         if (statusData.verificationUrl) setCodexVerificationUrl(statusData.verificationUrl);
         if (statusData.userCode) setCodexUserCode(statusData.userCode);
         if (statusData.detail) setCodexDetail(statusData.detail);
+        if (statusData.phase) setCodexPhase(statusData.phase);
 
         if (statusData.status === "error") {
           throw new Error(statusData.error || statusData.detail || "Codex login lỗi.");
@@ -817,6 +823,7 @@ export default function Workspace() {
 
         if (statusData.connected) {
           setCodexStatus("connected");
+          setCodexPhase("complete");
           setAiProvider("codex-account");
           setCodexUserCode("");
           setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
@@ -829,10 +836,12 @@ export default function Workspace() {
         }
       }
 
+      setCodexPhase("timeout");
       setNotice("Mã đăng nhập đã hết thời gian chờ. Bấm Kết nối ChatGPT để tạo mã mới.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex login failed.");
       setCodexStatus("disconnected");
+      setCodexPhase("error");
       setNotice("Kết nối ChatGPT/Codex chưa hoàn tất");
     } finally {
       setCodexConnecting(false);
@@ -859,6 +868,41 @@ export default function Workspace() {
       setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : data.userCode ? `Đang chờ mã ${data.userCode}` : "Codex chưa đăng nhập xong");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex status failed.");
+    }
+  }
+
+  async function diagnoseCodexAccount() {
+    if (!workspaceId) return;
+    setCodexDiagnosing(true);
+    setError("");
+    setNotice("Đang chẩn đoán Codex CLI và kết nối auth.openai.com…");
+
+    try {
+      const response = await fetch("/api/agent/codex-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "diagnostics" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không chạy được chẩn đoán Codex.");
+
+      const lines = [
+        data.version ? `Codex: ${data.version}` : "",
+        data.source ? `Nguồn CLI: ${data.source}` : "",
+        data.state ? `State: ${JSON.stringify(data.state, null, 2)}` : "",
+        data.loginStatus ? `Login status:\n${data.loginStatus}` : "",
+        data.dns ? `DNS:\n${data.dns}` : "",
+        data.connectivity ? `auth.openai.com:\n${data.connectivity}` : "",
+        data.log ? `App-server log:\n${data.log}` : "",
+      ].filter(Boolean);
+
+      setCodexDetail(lines.join("\n\n"));
+      setNotice("Đã chẩn đoán Codex • mở Chi tiết kỹ thuật để xem kết quả");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Codex diagnostics failed.");
+      setNotice("Chẩn đoán Codex gặp lỗi");
+    } finally {
+      setCodexDiagnosing(false);
     }
   }
 
@@ -1893,7 +1937,16 @@ export default function Workspace() {
                           </div>
                         </>
                       ) : (
-                        <span>Đang tạo mã thiết bị trong Cloud Sandbox…</span>
+                        <>
+                          <span>
+                            {codexPhase === "request-device-code"
+                              ? "Codex đã chạy • đang yêu cầu mã thiết bị từ OpenAI…"
+                              : codexPhase === "app-server"
+                                ? "Đang khởi động Codex app-server…"
+                                : "Đang chuẩn bị luồng đăng nhập Codex…"}
+                          </span>
+                          <small>Nếu quá khoảng 15 giây mà chưa có mã, bấm Chẩn đoán bên dưới.</small>
+                        </>
                       )}
                     </div>
                   ) : null}
@@ -1903,10 +1956,14 @@ export default function Workspace() {
                       {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Kết nối ChatGPT"}
                     </button>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
+                    <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
+                      {codexDiagnosing ? <Loader2 className="spin" size={13} /> : null}
+                      Chẩn đoán
+                    </button>
                   </div>
                   {codexDetail && codexStatus !== "connected" ? (
-                    <details className="codex-auth-detail">
-                      <summary>Chi tiết Codex CLI</summary>
+                    <details className="codex-auth-detail" open={codexPhase === "error"}>
+                      <summary>Chi tiết kỹ thuật Codex</summary>
                       <pre>{codexDetail.slice(-4000)}</pre>
                     </details>
                   ) : null}
