@@ -260,6 +260,7 @@ export default function Workspace() {
   const [codexStatus, setCodexStatus] = useState<"disconnected" | "waiting" | "connected">("disconnected");
   const [codexVerificationUrl, setCodexVerificationUrl] = useState("");
   const [codexUserCode, setCodexUserCode] = useState("");
+  const [codexDetail, setCodexDetail] = useState("");
   const [codexConnecting, setCodexConnecting] = useState(false);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
@@ -521,6 +522,16 @@ export default function Workspace() {
     }
   }
 
+  async function copyCodexCode() {
+    if (!codexUserCode) return;
+    try {
+      await navigator.clipboard.writeText(codexUserCode);
+      setNotice(`Đã sao chép mã thiết bị ${codexUserCode}`);
+    } catch {
+      setNotice(`Mã thiết bị: ${codexUserCode}`);
+    }
+  }
+
   async function runCloudProject() {
     if (!workspaceId || !treeItems.length) {
       setError("Hãy Load repository trước khi chạy.");
@@ -594,7 +605,8 @@ export default function Workspace() {
     }
     setTestLoading(true);
     setError("");
-    setNotice("Tester đang chạy lint / test / build / smoke test…");
+    setWorkspaceView("preview");
+    setNotice("Auto Test đang chuẩn bị dependencies → server → typecheck/lint/test/build → smoke…");
     try {
       const response = await fetch("/api/sandbox/run", {
         method: "POST",
@@ -615,9 +627,12 @@ export default function Workspace() {
         setPreviewMode("url");
         setPreviewKey((value) => value + 1);
       }
-      const lines = (data.checks || []).map(
-        (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
+      const lines = (data.phases || []).map(
+        (phase: any) => `${phase.passed ? "✓" : "✗"} phase: ${phase.name}`
       );
+      lines.push(...(data.checks || []).map(
+        (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
+      ));
       lines.push(`HTTP smoke: ${data.smokeStatus || "unknown"}`);
       setTestSummary(lines.join("\n\n"));
       setRunLogs(data.serverLogs || runLogs);
@@ -636,6 +651,8 @@ export default function Workspace() {
       return;
     }
     setPlayTestLoading(true);
+    setWorkspaceView("preview");
+    setPreviewView("replay");
     setPlayScreenshots([]);
     setLiveTestImage("");
     setLiveTestLabel("Đang khởi động browser tester…");
@@ -673,8 +690,8 @@ export default function Workspace() {
       let finished = false;
       let finalData: any = null;
 
-      for (let i = 0; i < 90; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 850));
+      for (let i = 0; i < 180; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
         const statusResponse = await fetch("/api/sandbox/playtest-live", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -750,8 +767,13 @@ export default function Workspace() {
   async function connectCodexAccount() {
     if (!workspaceId) return;
     setCodexConnecting(true);
+    setCodexStatus("waiting");
+    setCodexVerificationUrl("");
+    setCodexUserCode("");
+    setCodexDetail("");
     setError("");
-    setNotice("Đang mở đăng nhập ChatGPT cho Codex…");
+    setNotice("Đang cài/khởi động Codex CLI và tạo mã thiết bị…");
+
     try {
       const response = await fetch("/api/agent/codex-auth", {
         method: "POST",
@@ -760,12 +782,20 @@ export default function Workspace() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không bắt đầu được Codex login.");
-      setCodexStatus("waiting");
-      setCodexVerificationUrl(data.verificationUrl || "");
-      setCodexUserCode(data.userCode || "");
-      if (data.verificationUrl) window.open(data.verificationUrl, "_blank", "noopener,noreferrer");
+      if (data.status === "error") throw new Error(data.error || data.detail || "Codex device login lỗi.");
 
-      for (let i = 0; i < 20; i += 1) {
+      if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
+      if (data.userCode) setCodexUserCode(data.userCode);
+      if (data.detail) setCodexDetail(data.detail);
+
+      if (data.verificationUrl && data.userCode) {
+        window.open(data.verificationUrl, "_blank", "noopener,noreferrer");
+        setNotice(`Mã thiết bị ${data.userCode} đã sẵn sàng • hoàn tất đăng nhập trong tab mới`);
+      } else {
+        setNotice("Codex đang tạo mã thiết bị…");
+      }
+
+      for (let i = 0; i < 100; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 3000));
         const statusResponse = await fetch("/api/agent/codex-auth", {
           method: "POST",
@@ -773,17 +803,37 @@ export default function Workspace() {
           body: JSON.stringify({ workspaceId, action: "status" }),
         });
         const statusData = await statusResponse.json();
+        if (!statusResponse.ok) {
+          throw new Error(statusData.error || "Không kiểm tra được Codex login.");
+        }
+
+        if (statusData.verificationUrl) setCodexVerificationUrl(statusData.verificationUrl);
+        if (statusData.userCode) setCodexUserCode(statusData.userCode);
+        if (statusData.detail) setCodexDetail(statusData.detail);
+
+        if (statusData.status === "error") {
+          throw new Error(statusData.error || statusData.detail || "Codex login lỗi.");
+        }
+
         if (statusData.connected) {
           setCodexStatus("connected");
           setAiProvider("codex-account");
-          setNotice("Đã kết nối ChatGPT/Codex");
+          setCodexUserCode("");
+          setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
           return;
         }
+
+        if (statusData.userCode) {
+          setCodexStatus("waiting");
+          setNotice(`Đang chờ xác nhận mã ${statusData.userCode} trên ChatGPT…`);
+        }
       }
-      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT");
+
+      setNotice("Mã đăng nhập đã hết thời gian chờ. Bấm Kết nối ChatGPT để tạo mã mới.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex login failed.");
       setCodexStatus("disconnected");
+      setNotice("Kết nối ChatGPT/Codex chưa hoàn tất");
     } finally {
       setCodexConnecting(false);
     }
@@ -799,10 +849,14 @@ export default function Workspace() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Không kiểm tra được Codex.");
-      setCodexStatus(data.connected ? "connected" : "waiting");
+      setCodexStatus(data.connected ? "connected" : data.status === "error" ? "disconnected" : "waiting");
       if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
       if (data.userCode) setCodexUserCode(data.userCode);
-      setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : "Codex chưa đăng nhập xong");
+      if (data.detail) setCodexDetail(data.detail);
+      if (data.status === "error") {
+        setError(data.error || data.detail || "Codex login lỗi.");
+      }
+      setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : data.userCode ? `Đang chờ mã ${data.userCode}` : "Codex chưa đăng nhập xong");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex status failed.");
     }
@@ -1822,19 +1876,42 @@ export default function Workspace() {
                       {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
                     </span>
                   </div>
-                  {codexUserCode ? <p>Mã thiết bị: <code>{codexUserCode}</code></p> : null}
-                  {codexVerificationUrl ? (
-                    <a href={codexVerificationUrl} target="_blank" rel="noreferrer">Mở trang đăng nhập ChatGPT</a>
+                  {codexStatus === "waiting" ? (
+                    <div className="codex-device-card">
+                      <span className="eyebrow">DEVICE LOGIN</span>
+                      {codexUserCode ? (
+                        <>
+                          <strong className="codex-device-code">{codexUserCode}</strong>
+                          <span>Nhập mã này trên trang xác minh Codex.</span>
+                          <div className="account-actions">
+                            <button className="ghost-button" onClick={copyCodexCode} type="button">Sao chép mã</button>
+                            {codexVerificationUrl ? (
+                              <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
+                                Mở trang nhập mã
+                              </a>
+                            ) : null}
+                          </div>
+                        </>
+                      ) : (
+                        <span>Đang tạo mã thiết bị trong Cloud Sandbox…</span>
+                      )}
+                    </div>
                   ) : null}
                   <div className="account-actions">
                     <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      Kết nối ChatGPT
+                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Kết nối ChatGPT"}
                     </button>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
                   </div>
+                  {codexDetail && codexStatus !== "connected" ? (
+                    <details className="codex-auth-detail">
+                      <summary>Chi tiết Codex CLI</summary>
+                      <pre>{codexDetail.slice(-4000)}</pre>
+                    </details>
+                  ) : null}
                   <p className="settings-hint">
-                    Dùng luồng device login chính thức của Codex. Vibaocode không lấy cookie phiên ChatGPT.
+                    Vibaocode dùng Device Code Authorization chính thức của Codex CLI, không đọc cookie ChatGPT. Nếu không ra mã, hãy bật Device Code Authorization trong ChatGPT → Settings → Security rồi tạo mã mới.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
