@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
   const content = String(body.content ?? "");
   const projectContext = String(body.projectContext || "").slice(0, 20000);
   const sessionKey = String(body.apiKey || "").trim();
+  const requestedModel = String(body.model || "").trim();
 
   if (provider !== "openai") {
     return NextResponse.json({ error: "V1 hiện hỗ trợ OpenAI trước." }, { status: 400 });
@@ -63,7 +64,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const model = process.env.OPENAI_MODEL || "gpt-6-astra";
+  const allowedModels = new Set([
+    "gpt-5.3-codex",
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+  ]);
+  const configuredModel = requestedModel || process.env.OPENAI_MODEL || "gpt-5.3-codex";
+  const model = allowedModels.has(configuredModel) ? configuredModel : "gpt-5.3-codex";
   const instructions = [
     "You are Vibaocode's coding agent.",
     "Edit only the selected file unless the user explicitly asks for a replacement file.",
