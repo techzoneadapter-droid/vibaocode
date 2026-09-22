@@ -79,6 +79,37 @@ type ProjectProposal = {
   size: number;
 };
 
+type CodexLimitWindow = {
+  usedPercent?: number;
+  windowDurationMins?: number | null;
+  resetsAt?: number | null;
+};
+
+type CodexLimit = {
+  limitId?: string;
+  limitName?: string | null;
+  planType?: string | null;
+  primary?: CodexLimitWindow | null;
+  secondary?: CodexLimitWindow | null;
+};
+
+type CodexUsageSnapshot = {
+  rateLimits?: {
+    rateLimits?: CodexLimit | null;
+    rateLimitsByLimitId?: Record<string, CodexLimit> | null;
+    ordinaryUsageAllowed?: boolean | null;
+  } | null;
+  usage?: {
+    summary?: {
+      lifetimeTokens?: number | null;
+      peakDailyTokens?: number | null;
+      currentStreakDays?: number | null;
+    } | null;
+    dailyUsageBuckets?: Array<{ startDate: string; tokens: number }> | null;
+  } | null;
+  error?: string;
+};
+
 const devices: Device[] = [
   { label: "Android Small", width: 360, height: 800 },
   { label: "Pixel", width: 390, height: 844 },
@@ -264,6 +295,12 @@ export default function Workspace() {
   const [codexPhase, setCodexPhase] = useState("");
   const [codexConnecting, setCodexConnecting] = useState(false);
   const [codexDiagnosing, setCodexDiagnosing] = useState(false);
+  const [codexUsage, setCodexUsage] = useState<CodexUsageSnapshot | null>(null);
+  const [codexUsageLoading, setCodexUsageLoading] = useState(false);
+  const [aiProgress, setAiProgress] = useState(0);
+  const [aiProgressLabel, setAiProgressLabel] = useState("Sẵn sàng");
+  const [aiProgressDetail, setAiProgressDetail] = useState("");
+  const [aiRunUsage, setAiRunUsage] = useState<Record<string, number> | null>(null);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
   const [projectSummary, setProjectSummary] = useState("");
@@ -341,6 +378,12 @@ export default function Workspace() {
     }, 700);
     return () => window.clearTimeout(timer);
   }, [autoSync, sandboxRunning, dirty, selected?.path, editorContent, workspaceId, repo, branch]);
+
+  useEffect(() => {
+    if (codexStatus === "connected" && workspaceId) {
+      void loadCodexUsage(false);
+    }
+  }, [codexStatus, workspaceId]);
 
   const saveSettings = () => {
     sessionStorage.setItem(
@@ -827,6 +870,7 @@ export default function Workspace() {
           setAiProvider("codex-account");
           setCodexUserCode("");
           setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
+          void loadCodexUsage(false);
           return;
         }
 
@@ -866,8 +910,29 @@ export default function Workspace() {
         setError(data.error || data.detail || "Codex login lỗi.");
       }
       setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : data.userCode ? `Đang chờ mã ${data.userCode}` : "Codex chưa đăng nhập xong");
+      if (data.connected) void loadCodexUsage(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Codex status failed.");
+    }
+  }
+
+  async function loadCodexUsage(announce = false) {
+    if (!workspaceId) return;
+    setCodexUsageLoading(true);
+    try {
+      const response = await fetch("/api/agent/codex-auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workspaceId, action: "usage" }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được hạn mức Codex.");
+      setCodexUsage(data);
+      if (announce) setNotice("Đã làm mới hạn mức ChatGPT/Codex");
+    } catch (err) {
+      if (announce) setError(err instanceof Error ? err.message : "Không đọc được hạn mức Codex.");
+    } finally {
+      setCodexUsageLoading(false);
     }
   }
 
@@ -947,15 +1012,47 @@ export default function Workspace() {
     setProjectProposals([]);
     setProjectSummary("");
     setProjectPlan("");
+    setAiRunUsage(null);
+    setAiProgress(2);
+    setAiProgressLabel("Đang chuẩn bị AI Agent…");
+    setAiProgressDetail("");
     setNotice("Project Agent đang tìm file liên quan…");
+
+    let progressTimer: number | undefined;
 
     try {
       const useCodexAccount = aiProvider === "codex-account";
       const useExternalProvider = aiProvider === "claude-api" || aiProvider === "gemini-api";
 
       if (useCodexAccount && !sandboxRunning) {
+        setAiProgress(4);
+        setAiProgressLabel("Đang khởi động Cloud Runtime…");
         const started = await runCloudProject();
         if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
+      }
+
+      if (useCodexAccount) {
+        progressTimer = window.setInterval(async () => {
+          try {
+            const statusResponse = await fetch("/api/agent/codex-edit", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "status",
+                workspaceId,
+                repo,
+                branch,
+              }),
+            });
+            if (!statusResponse.ok) return;
+            const state = await statusResponse.json();
+            if (typeof state.percent === "number") setAiProgress(state.percent);
+            if (state.phase) setAiProgressLabel(state.phase);
+            setAiProgressDetail(state.detail || "");
+          } catch {
+            // The main Agent request keeps running even if a progress poll fails.
+          }
+        }, 1400);
       }
 
       const endpoint = useCodexAccount
@@ -964,12 +1061,18 @@ export default function Workspace() {
           ? "/api/ai/provider-project"
           : "/api/ai/project";
 
+      if (!useCodexAccount) {
+        setAiProgress(15);
+        setAiProgressLabel("AI đang đọc ngữ cảnh dự án…");
+      }
+
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           useCodexAccount
             ? {
+                action: "run",
                 workspaceId,
                 repo,
                 branch,
@@ -999,9 +1102,14 @@ export default function Workspace() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Project Agent không xử lý được yêu cầu.");
 
+      setAiProgress(96);
+      setAiProgressLabel("Đang cập nhật preview và kết quả…");
+
       setProjectProposals(data.files || []);
       setProjectSummary(data.summary || "");
       setProjectPlan(data.plan || "");
+      if (data.usage) setAiRunUsage(data.usage);
+
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setPreviewMode("url");
@@ -1016,11 +1124,21 @@ export default function Workspace() {
         if (result.smokeStatus) lines.push(`HTTP smoke: ${result.smokeStatus}`);
         setTestSummary(lines.join("\n\n"));
       }
+
+      setAiProgress(100);
+      setAiProgressLabel(data.checks?.passed === false ? "Hoàn tất • cần review test" : "Hoàn tất");
+      setAiProgressDetail(`${data.files?.length || 0} file thay đổi`);
       setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model}`);
+
+      if (useCodexAccount) void loadCodexUsage(false);
     } catch (err) {
+      setAiProgress(0);
+      setAiProgressLabel("Agent gặp lỗi");
+      setAiProgressDetail("");
       setError(err instanceof Error ? err.message : "Project Agent failed.");
       setNotice("Project Agent gặp lỗi");
     } finally {
+      if (progressTimer) window.clearInterval(progressTimer);
       setAiLoading(false);
     }
   }
@@ -1700,6 +1818,51 @@ export default function Workspace() {
                 </button>
               </div>
 
+              {aiProvider === "codex-account" && codexStatus === "connected" ? (
+                <div className="ai-usage-card">
+                  <div className="ai-usage-head">
+                    <span className="eyebrow">AI USAGE</span>
+                    <button className="text-button" onClick={() => loadCodexUsage(true)} disabled={codexUsageLoading} type="button">
+                      {codexUsageLoading ? <Loader2 className="spin" size={11} /> : <RefreshCw size={11} />}
+                      Làm mới
+                    </button>
+                  </div>
+                  {(() => {
+                    const primary = codexUsage?.rateLimits?.rateLimits?.primary;
+                    const secondary = codexUsage?.rateLimits?.rateLimits?.secondary;
+                    const usedPrimary = Math.max(0, Math.min(100, Number(primary?.usedPercent || 0)));
+                    const usedSecondary = Math.max(0, Math.min(100, Number(secondary?.usedPercent || 0)));
+                    return (
+                      <>
+                        <div className="usage-meter-row">
+                          <div>
+                            <strong>Hạn mức chính</strong>
+                            <span>{primary ? `${Math.round(100 - usedPrimary)}% còn lại` : "Đang đọc…"}</span>
+                          </div>
+                          <div className="usage-meter"><i style={{ width: `${usedPrimary}%` }} /></div>
+                          {primary?.resetsAt ? <small>Reset {new Date(primary.resetsAt * 1000).toLocaleString("vi-VN")}</small> : null}
+                        </div>
+                        {secondary ? (
+                          <div className="usage-meter-row secondary">
+                            <div>
+                              <strong>Hạn mức dài hạn</strong>
+                              <span>{Math.round(100 - usedSecondary)}% còn lại</span>
+                            </div>
+                            <div className="usage-meter"><i style={{ width: `${usedSecondary}%` }} /></div>
+                            {secondary.resetsAt ? <small>Reset {new Date(secondary.resetsAt * 1000).toLocaleString("vi-VN")}</small> : null}
+                          </div>
+                        ) : null}
+                        {codexUsage?.usage?.summary?.lifetimeTokens ? (
+                          <small className="usage-token-note">
+                            Tổng hoạt động: {Number(codexUsage.usage.summary.lifetimeTokens).toLocaleString("vi-VN")} tokens
+                          </small>
+                        ) : null}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : null}
+
               <div className="ai-scope-row drawer-scope">
                 <div className="segmented">
                   <button className={aiScope === "project" ? "active" : ""} onClick={() => setAiScope("project")} type="button">
@@ -1743,6 +1906,29 @@ export default function Workspace() {
                   {aiLoading ? "AI đang làm…" : "Build with AI"}
                 </button>
               </div>
+
+              {(aiLoading || aiProgress > 0) && aiScope === "project" ? (
+                <div className={`ai-progress-card ${aiProgress >= 100 ? "complete" : ""}`}>
+                  <div className="ai-progress-head">
+                    <div>
+                      <span className="eyebrow">AGENT PROGRESS</span>
+                      <strong>{Math.round(aiProgress)}%</strong>
+                    </div>
+                    <span>{aiProgressLabel}</span>
+                  </div>
+                  <div className="ai-progress-track">
+                    <i style={{ width: `${Math.max(0, Math.min(100, aiProgress))}%` }} />
+                  </div>
+                  {aiProgressDetail ? <small>{aiProgressDetail}</small> : null}
+                  {aiRunUsage ? (
+                    <div className="ai-run-usage">
+                      <span>Input {Number(aiRunUsage.inputTokens || 0).toLocaleString("vi-VN")}</span>
+                      <span>Cached {Number(aiRunUsage.cachedInputTokens || 0).toLocaleString("vi-VN")}</span>
+                      <span>Output {Number(aiRunUsage.outputTokens || 0).toLocaleString("vi-VN")}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
 
               {aiScope === "project" && (projectSummary || projectProposals.length) ? (
                 <div className="project-agent-result drawer-results">
@@ -1961,6 +2147,12 @@ export default function Workspace() {
                       Chẩn đoán
                     </button>
                   </div>
+                  {codexStatus === "connected" ? (
+                    <button className="ghost-button codex-usage-refresh" onClick={() => loadCodexUsage(true)} disabled={codexUsageLoading} type="button">
+                      {codexUsageLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
+                      Làm mới hạn mức AI
+                    </button>
+                  ) : null}
                   {codexDetail && codexStatus !== "connected" ? (
                     <details className="codex-auth-detail" open={codexPhase === "error"}>
                       <summary>Chi tiết kỹ thuật Codex</summary>
