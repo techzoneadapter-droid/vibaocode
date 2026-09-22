@@ -37,11 +37,16 @@ export async function POST(request: NextRequest) {
       const ensuredDir = await ensurePublicRepo(sandbox, repo, branch);
       await installDependencies(sandbox, ensuredDir);
       const server = await startDevServer(sandbox, ensuredDir);
+      const revision = await shell(
+        sandbox,
+        `cd ${JSON.stringify(ensuredDir)} && git rev-parse --short HEAD 2>/dev/null || true`,
+      );
       return NextResponse.json({
         sandboxName: sandbox.name,
         previewUrl: server.previewUrl,
         running: server.ok,
         logs: server.logs,
+        revision: revision.stdout.trim(),
       });
     }
 
