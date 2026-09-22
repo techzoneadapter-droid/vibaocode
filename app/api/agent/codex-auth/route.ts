@@ -7,42 +7,243 @@ import {
 
 export const maxDuration = 180;
 
-function extractDeviceAuth(log: string) {
-  const url =
-    log.match(/https:\/\/auth\.openai\.com\/codex\/device[^\s]*/i)?.[0] ||
-    log.match(/https:\/\/[A-Za-z0-9.-]*openai\.com\/[A-Za-z0-9_./?=&%-]*/i)?.[0] ||
-    "";
+const STATE_FILE = "/tmp/vibaocode-codex-device.json";
+const LOG_FILE = "/tmp/vibaocode-codex-device.log";
+const PID_FILE = "/tmp/vibaocode-codex-device.pid";
+const SCRIPT_FILE = "/tmp/vibaocode-codex-device.cjs";
 
-  const code =
-    log.match(/(?:code|mã)[^A-Z0-9]{0,20}([A-Z0-9]{4,6}-[A-Z0-9]{4,6})/i)?.[1]?.toUpperCase() ||
-    log.match(/\b([A-Z0-9]{4,6}-[A-Z0-9]{4,6})\b/i)?.[1]?.toUpperCase() ||
-    "";
+function normalizeAuthError(value: string) {
+  const log = value || "";
 
-  return {
-    verificationUrl: url || (code ? "https://auth.openai.com/codex/device" : ""),
-    userCode: code,
-  };
+  if (/enable device code authorization|device code authorization.*disabled|device code login is not enabled/i.test(log)) {
+    return "ChatGPT đang tắt Device Code Authorization. Vào ChatGPT → Settings → Security, bật Device Code Authorization for Codex rồi bấm Kết nối ChatGPT lại.";
+  }
+
+  if (/deviceauth\/usercode|token_exchange_failed|device code exchange failed|error sending request/i.test(log)) {
+    return "Codex CLI không kết nối được tới máy chủ đăng nhập OpenAI từ Cloud Sandbox. Hãy bấm Chẩn đoán; Vibaocode sẽ hiển thị lỗi mạng/auth cụ thể.";
+  }
+
+  if (/403 forbidden|cf-mitigated|cloudflare|challenge/i.test(log)) {
+    return "Kết nối từ Cloud Sandbox tới auth.openai.com đang bị Cloudflare chặn. Đây là lỗi đường truyền đăng nhập, không phải mật khẩu ChatGPT.";
+  }
+
+  return log.trim();
 }
 
-function authProblem(log: string) {
-  if (/enable device code authorization|device[- ]code authorization.*disabled/i.test(log)) {
-    return "ChatGPT đang tắt Device Code Authorization. Vào ChatGPT → Settings → Security, bật Device Code Authorization for Codex rồi bấm tạo mã mới.";
-  }
-  if (/cloudflare|cf-mitigated|403 forbidden/i.test(log)) {
-    return "Cloud Sandbox đang bị chặn khi kết nối auth.openai.com. Hãy thử tạo lại Sandbox hoặc đăng nhập lại sau.";
-  }
-  if (/token_exchange_failed|device code exchange failed/i.test(log)) {
-    return "Codex nhận được mã nhưng đổi token thất bại. Hãy tạo mã mới và đăng nhập lại.";
-  }
-  if (/command not found|not found.*codex/i.test(log)) {
-    return "Codex CLI chưa sẵn sàng trong Sandbox.";
-  }
-  return "";
+function deviceRunnerSource() {
+  return String.raw`
+const fs = require("fs");
+const { spawn } = require("child_process");
+
+const bin = process.argv[2];
+const codexHome = process.argv[3];
+const stateFile = process.argv[4];
+const logFile = process.argv[5];
+
+function writeState(next) {
+  fs.writeFileSync(
+    stateFile,
+    JSON.stringify({ updatedAt: new Date().toISOString(), ...next }, null, 2),
+  );
 }
 
-function connectedFrom(output: string) {
-  return /logged in using chatgpt|logged in.*chatgpt|authenticated.*chatgpt/i.test(output) &&
-    !/not logged|not authenticated/i.test(output);
+function log(line) {
+  fs.appendFileSync(logFile, String(line) + "\n");
+}
+
+writeState({ status: "starting", connected: false, phase: "app-server" });
+
+const child = spawn(bin, ["app-server", "--stdio"], {
+  env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: "warn" },
+  stdio: ["pipe", "pipe", "pipe"],
+});
+
+let buffer = "";
+let initialized = false;
+let loginStarted = false;
+let finished = false;
+
+function send(message) {
+  child.stdin.write(JSON.stringify(message) + "\n");
+}
+
+function finish(next) {
+  if (finished) return;
+  finished = true;
+  writeState(next);
+  setTimeout(() => {
+    try { child.kill("SIGTERM"); } catch {}
+    process.exit(next.connected ? 0 : 1);
+  }, 1200);
+}
+
+child.stdout.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  const lines = buffer.split(/\r?\n/);
+  buffer = lines.pop() || "";
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    log("[stdout] " + line);
+
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (message.id === 1 && !initialized) {
+      if (message.error) {
+        finish({
+          status: "error",
+          connected: false,
+          phase: "initialize",
+          error: message.error.message || JSON.stringify(message.error),
+        });
+        return;
+      }
+
+      initialized = true;
+      send({ method: "initialized" });
+      send({
+        method: "account/login/start",
+        id: 2,
+        params: { type: "chatgptDeviceCode" },
+      });
+      loginStarted = true;
+      writeState({
+        status: "starting",
+        connected: false,
+        phase: "request-device-code",
+      });
+      continue;
+    }
+
+    if (message.id === 2 && loginStarted) {
+      if (message.error) {
+        finish({
+          status: "error",
+          connected: false,
+          phase: "request-device-code",
+          error: message.error.message || JSON.stringify(message.error),
+        });
+        return;
+      }
+
+      const result = message.result || {};
+      if (result.type === "chatgptDeviceCode" && result.userCode) {
+        writeState({
+          status: "waiting",
+          connected: false,
+          phase: "waiting-user",
+          loginId: result.loginId || "",
+          verificationUrl: result.verificationUrl || "https://auth.openai.com/codex/device",
+          userCode: result.userCode,
+        });
+      } else {
+        finish({
+          status: "error",
+          connected: false,
+          phase: "request-device-code",
+          error: "Codex app-server did not return a device code.",
+        });
+      }
+      continue;
+    }
+
+    if (message.method === "account/login/completed") {
+      const params = message.params || {};
+      if (params.success) {
+        finish({
+          status: "connected",
+          connected: true,
+          phase: "complete",
+          loginId: params.loginId || "",
+        });
+      } else {
+        finish({
+          status: "error",
+          connected: false,
+          phase: "complete",
+          error: params.error || "Device login was not completed.",
+        });
+      }
+    }
+  }
+});
+
+child.stderr.on("data", (chunk) => {
+  log("[stderr] " + chunk.toString("utf8").trim());
+});
+
+child.on("error", (error) => {
+  finish({
+    status: "error",
+    connected: false,
+    phase: "spawn",
+    error: error.message,
+  });
+});
+
+child.on("exit", (code, signal) => {
+  if (!finished) {
+    finish({
+      status: "error",
+      connected: false,
+      phase: "app-server-exit",
+      error: "Codex app-server exited before login completed (code=" + code + ", signal=" + signal + ").",
+    });
+  }
+});
+
+send({
+  method: "initialize",
+  id: 1,
+  params: {
+    clientInfo: {
+      name: "vibaocode",
+      title: "Vibaocode",
+      version: "0.1.0",
+    },
+  },
+});
+
+setTimeout(() => {
+  if (!finished) {
+    finish({
+      status: "error",
+      connected: false,
+      phase: "timeout",
+      error: "Device login timed out after 15 minutes. Create a fresh code and try again.",
+    });
+  }
+}, 15 * 60 * 1000);
+`;
+}
+
+async function readState(sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>) {
+  const result = await shell(
+    sandbox,
+    `cat ${JSON.stringify(STATE_FILE)} 2>/dev/null || true`,
+  );
+
+  if (!result.stdout.trim()) return null;
+
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+async function readLog(sandbox: Awaited<ReturnType<typeof getWorkspaceSandbox>>) {
+  const result = await shell(
+    sandbox,
+    `tail -n 180 ${JSON.stringify(LOG_FILE)} 2>/dev/null || true`,
+  );
+  return result.stdout.trim();
 }
 
 export async function POST(request: NextRequest) {
@@ -56,125 +257,153 @@ export async function POST(request: NextRequest) {
     }
 
     const sandbox = await getWorkspaceSandbox(workspaceId);
-    const codex = await ensureCodexCli(sandbox);
-    await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
-
-    const envPrefix = `CODEX_HOME=${JSON.stringify(codex.codexHome)}`;
-    const bin = JSON.stringify(codex.bin);
 
     if (action === "start") {
+      const codex = await ensureCodexCli(sandbox);
+      await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
+
+      const scriptBase64 = Buffer.from(deviceRunnerSource(), "utf8").toString("base64");
+
       await shell(
         sandbox,
         `
-if [ -f /tmp/vibaocode-codex-login.pid ]; then
-  OLD_PID="$(cat /tmp/vibaocode-codex-login.pid 2>/dev/null || true)"
+set -e
+if [ -f ${JSON.stringify(PID_FILE)} ]; then
+  OLD_PID="$(cat ${JSON.stringify(PID_FILE)} 2>/dev/null || true)"
   if [ -n "$OLD_PID" ]; then kill "$OLD_PID" >/dev/null 2>&1 || true; fi
 fi
-rm -f /tmp/vibaocode-codex-login.log /tmp/vibaocode-codex-login.pid
-nohup bash -lc '${envPrefix} ${bin} login --device-auth' > /tmp/vibaocode-codex-login.log 2>&1 < /dev/null &
-echo $! > /tmp/vibaocode-codex-login.pid
+rm -f ${JSON.stringify(STATE_FILE)} ${JSON.stringify(LOG_FILE)} ${JSON.stringify(PID_FILE)}
+printf '%s' ${JSON.stringify(scriptBase64)} | base64 -d > ${JSON.stringify(SCRIPT_FILE)}
+nohup node ${JSON.stringify(SCRIPT_FILE)} \
+  ${JSON.stringify(codex.bin)} \
+  ${JSON.stringify(codex.codexHome)} \
+  ${JSON.stringify(STATE_FILE)} \
+  ${JSON.stringify(LOG_FILE)} \
+  >/tmp/vibaocode-codex-runner.out 2>&1 < /dev/null &
+echo $! > ${JSON.stringify(PID_FILE)}
 `,
       );
 
-      for (let i = 0; i < 18; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        const log = await shell(
-          sandbox,
-          "cat /tmp/vibaocode-codex-login.log 2>/dev/null || true",
-        );
-        const auth = extractDeviceAuth(log.stdout);
-        const problem = authProblem(log.stdout);
+      for (let i = 0; i < 15; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        const state = await readState(sandbox);
+        if (!state) continue;
 
-        if (problem) {
+        if (state.status === "waiting" || state.status === "connected" || state.status === "error") {
           return NextResponse.json({
-            status: "error",
-            connected: false,
+            ...state,
             version: codex.version,
-            error: problem,
-            detail: log.stdout.slice(-5000),
-            ...auth,
-          });
-        }
-
-        if (auth.userCode) {
-          return NextResponse.json({
-            status: "waiting",
-            connected: false,
-            version: codex.version,
-            ...auth,
-            detail: log.stdout.slice(-5000),
+            source: codex.source,
+            error: state.error ? normalizeAuthError(String(state.error)) : undefined,
+            rawError: state.error || undefined,
           });
         }
       }
 
-      const log = await shell(
-        sandbox,
-        "cat /tmp/vibaocode-codex-login.log 2>/dev/null || true",
-      );
-      const problem = authProblem(log.stdout);
-
       return NextResponse.json({
-        status: problem ? "error" : "starting",
+        status: "starting",
         connected: false,
+        phase: "app-server",
         version: codex.version,
-        ...extractDeviceAuth(log.stdout),
-        error: problem || undefined,
-        detail: log.stdout.slice(-5000),
+        source: codex.source,
       });
     }
 
     if (action === "status") {
+      const state = await readState(sandbox);
+
+      if (state?.status === "connected") {
+        const codex = await ensureCodexCli(sandbox);
+        const status = await shell(
+          sandbox,
+          `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} login status 2>&1 || true`,
+        );
+        const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
+
+        return NextResponse.json({
+          ...state,
+          connected,
+          status: connected ? "connected" : "waiting",
+          version: codex.version,
+          source: codex.source,
+          detail: status.stdout.trim() || status.stderr.trim(),
+        });
+      }
+
+      if (state) {
+        return NextResponse.json({
+          ...state,
+          error: state.error ? normalizeAuthError(String(state.error)) : undefined,
+          rawError: state.error || undefined,
+          detail: await readLog(sandbox),
+        });
+      }
+
+      const codex = await ensureCodexCli(sandbox);
       const status = await shell(
         sandbox,
-        `${envPrefix} ${bin} login status 2>&1 || true`,
+        `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} login status 2>&1 || true`,
       );
-      const log = await shell(
-        sandbox,
-        "cat /tmp/vibaocode-codex-login.log 2>/dev/null || true",
-      );
-      const combined = `${status.stdout}\n${status.stderr}\n${log.stdout}`;
-      const connected = connectedFrom(combined);
-      const problem = connected ? "" : authProblem(combined);
+      const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
 
       return NextResponse.json({
-        status: connected ? "connected" : problem ? "error" : "waiting",
+        status: connected ? "connected" : "disconnected",
         connected,
+        phase: connected ? "complete" : "idle",
         version: codex.version,
-        ...extractDeviceAuth(combined),
-        error: problem || undefined,
-        detail: (
-          status.stdout.trim() ||
-          status.stderr.trim() ||
-          log.stdout.slice(-4000)
-        ),
+        source: codex.source,
+        detail: status.stdout.trim() || status.stderr.trim(),
       });
     }
 
     if (action === "logout") {
+      const codex = await ensureCodexCli(sandbox);
       await shell(
         sandbox,
-        `${envPrefix} ${bin} logout >/tmp/vibaocode-codex-logout.log 2>&1 || true`,
+        `
+if [ -f ${JSON.stringify(PID_FILE)} ]; then
+  PID="$(cat ${JSON.stringify(PID_FILE)} 2>/dev/null || true)"
+  if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi
+fi
+CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} logout >/tmp/vibaocode-codex-logout.log 2>&1 || true
+rm -f ${JSON.stringify(STATE_FILE)} ${JSON.stringify(PID_FILE)}
+`,
       );
+
       return NextResponse.json({
         status: "disconnected",
         connected: false,
+        phase: "idle",
         version: codex.version,
+        source: codex.source,
       });
     }
 
     if (action === "diagnostics") {
+      const codex = await ensureCodexCli(sandbox);
       const status = await shell(
         sandbox,
-        `${envPrefix} ${bin} login status 2>&1 || true`,
+        `CODEX_HOME=${JSON.stringify(codex.codexHome)} ${JSON.stringify(codex.bin)} login status 2>&1 || true`,
       );
-      const connectivity = await shell(
+      const dns = await shell(
         sandbox,
-        "curl -I -L --max-time 12 https://auth.openai.com/codex/device 2>&1 | tail -n 40 || true",
+        "getent hosts auth.openai.com 2>&1 | head -n 8 || true",
       );
+      const auth = await shell(
+        sandbox,
+        "curl -4 -sS -I --max-time 12 https://auth.openai.com/codex/device 2>&1 | head -n 30 || true",
+      );
+      const state = await readState(sandbox);
+      const log = await readLog(sandbox);
+
       return NextResponse.json({
         version: codex.version,
-        status: status.stdout || status.stderr,
-        connectivity: connectivity.stdout || connectivity.stderr,
+        source: codex.source,
+        state,
+        loginStatus: status.stdout || status.stderr,
+        dns: dns.stdout || dns.stderr,
+        connectivity: auth.stdout || auth.stderr,
+        log,
       });
     }
 
