@@ -4,6 +4,7 @@ import {
   Bot,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Code2,
   Eye,
@@ -221,7 +222,7 @@ export default function Workspace() {
   const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api">("openai-api");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("https://vibaocode.vercel.app");
+  const [previewUrl, setPreviewUrl] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
   const [sandboxRunning, setSandboxRunning] = useState(false);
   const [sandboxName, setSandboxName] = useState("");
@@ -261,6 +262,8 @@ export default function Workspace() {
   const [previewMode, setPreviewMode] = useState<"url" | "html">("url");
   const [previewKey, setPreviewKey] = useState(0);
   const [tab, setTab] = useState<"code" | "diff">("code");
+  const [workspaceView, setWorkspaceView] = useState<"preview" | "code" | "changes">("preview");
+  const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [repoLoading, setRepoLoading] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
@@ -294,7 +297,7 @@ export default function Workspace() {
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
       if (data.geminiKey) setGeminiKey(data.geminiKey);
       if (typeof data.autoSync === "boolean") setAutoSync(data.autoSync);
-      if (data.previewUrl) setPreviewUrl(data.previewUrl);
+      if (data.previewUrl && data.previewUrl !== "https://vibaocode.vercel.app") setPreviewUrl(data.previewUrl);
     } catch {
       // Ignore malformed session data.
     }
