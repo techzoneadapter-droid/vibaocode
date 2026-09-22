@@ -160,13 +160,16 @@ export async function startDevServer(
   const info = await packageInfo(sandbox, dir);
   const scripts = info.scripts || {};
   const deps = info.deps || {};
+  const previewUrl = sandbox.domain(3000);
+  const previewHost = new URL(previewUrl).hostname.replace(/[^A-Za-z0-9.-]/g, "");
   let startCommand = "";
 
   if (scripts.dev) {
     if (deps.next) {
       startCommand = "npm run dev -- --hostname 0.0.0.0 -p 3000";
     } else if (deps.vite) {
-      startCommand = "npm run dev -- --host 0.0.0.0 --port 3000";
+      startCommand =
+        `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${previewHost} npm run dev -- --host 0.0.0.0 --port 3000`;
     } else {
       startCommand = "PORT=3000 HOST=0.0.0.0 HOSTNAME=0.0.0.0 npm run dev";
     }
@@ -214,7 +217,7 @@ exit 1
   return {
     ok: result.exitCode === 0,
     logs: logResult.stdout || result.stdout || result.stderr,
-    previewUrl: sandbox.domain(3000),
+    previewUrl,
   };
 }
 
