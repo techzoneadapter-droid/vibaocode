@@ -126,6 +126,7 @@ async function readProgress(
 ) {
   try {
     const buffer = await sandbox.readFileToBuffer({ path: progressPath });
+    if (!buffer) throw new Error("Progress state is not available yet.");
     return JSON.parse(buffer.toString("utf8")) as ProgressState;
   } catch {
     return {
