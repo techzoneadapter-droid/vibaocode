@@ -316,6 +316,7 @@ export default function Workspace() {
   const [aiProgress, setAiProgress] = useState(0);
   const [aiProgressLabel, setAiProgressLabel] = useState("Sẵn sàng");
   const [aiProgressDetail, setAiProgressDetail] = useState("");
+  const [aiElapsedSeconds, setAiElapsedSeconds] = useState(0);
   const [aiRunUsage, setAiRunUsage] = useState<Record<string, number> | null>(null);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
@@ -1085,6 +1086,7 @@ export default function Workspace() {
     setAiProgress(2);
     setAiProgressLabel("Đang chuẩn bị AI Agent…");
     setAiProgressDetail("");
+    setAiElapsedSeconds(0);
     setNotice("Project Agent đang chuẩn bị workspace…");
 
     try {
@@ -1160,6 +1162,11 @@ export default function Workspace() {
             if (typeof state.percent === "number") setAiProgress(state.percent);
             if (state.phase) setAiProgressLabel(state.phase);
             setAiProgressDetail(state.detail || "");
+            if (typeof state.elapsedSeconds === "number") setAiElapsedSeconds(state.elapsedSeconds);
+
+            if (state.error) {
+              throw new Error(state.error);
+            }
 
             if (state.finished) {
               finished = true;
@@ -1258,6 +1265,7 @@ export default function Workspace() {
       }
 
       setAiProgress(100);
+      setAiElapsedSeconds(0);
       setAiProgressLabel(data.checks?.passed === false ? "Hoàn tất • cần review test" : "Hoàn tất");
       setAiProgressDetail(`${data.files?.length || 0} file thay đổi`);
       setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model || "AI"}`);
@@ -1271,6 +1279,30 @@ export default function Workspace() {
       setNotice("Project Agent gặp lỗi");
     } finally {
       setAiLoading(false);
+    }
+  }
+
+  async function cancelProjectAI() {
+    if (!workspaceId || aiProvider !== "codex-account") return;
+    try {
+      await fetch("/api/agent/codex-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cancel",
+          workspaceId,
+          repo,
+          branch,
+        }),
+      });
+      setAiLoading(false);
+      setAiProgress(0);
+      setAiElapsedSeconds(0);
+      setAiProgressLabel("Agent đã được dừng");
+      setAiProgressDetail("");
+      setNotice("Đã dừng Codex Agent");
+    } catch {
+      setNotice("Không dừng được Codex Agent");
     }
   }
 
@@ -2094,7 +2126,21 @@ export default function Workspace() {
                   <div className="ai-progress-track">
                     <i style={{ width: `${Math.max(0, Math.min(100, aiProgress))}%` }} />
                   </div>
+                  {aiElapsedSeconds > 0 && aiLoading ? (
+                    <div className="agent-heartbeat">
+                      <span className="heartbeat-dot" />
+                      <strong>Process đang chạy</strong>
+                      <span>
+                        {Math.floor(aiElapsedSeconds / 60)}:{String(aiElapsedSeconds % 60).padStart(2, "0")}
+                      </span>
+                    </div>
+                  ) : null}
                   {aiProgressDetail ? <small>{aiProgressDetail}</small> : null}
+                  {aiLoading && aiProvider === "codex-account" ? (
+                    <button className="agent-cancel-button" onClick={cancelProjectAI} type="button">
+                      Dừng Agent
+                    </button>
+                  ) : null}
                   {aiRunUsage ? (
                     <div className="ai-run-usage">
                       <span>Input {Number(aiRunUsage.inputTokens || 0).toLocaleString("vi-VN")}</span>
