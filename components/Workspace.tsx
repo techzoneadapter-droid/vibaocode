@@ -721,6 +721,7 @@ export default function Workspace() {
           workspaceId,
           repo,
           branch,
+          githubToken,
         }),
       });
       const data = await response.json();
