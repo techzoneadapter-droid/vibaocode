@@ -2256,9 +2256,19 @@ export default function Workspace() {
                 {branchLoading ? <Loader2 className="spin" size={14} /> : <GitBranch size={14} />}
                 Branch
               </button>
-              <button className="primary-button" onClick={saveToGitHub} disabled={!dirty || saving} type="button">
-                {saving ? <Loader2 className="spin" size={14} /> : <Save size={14} />}
-                Push
+              <button
+                className="primary-button"
+                onClick={dirty ? saveToGitHub : pushSandboxHead}
+                disabled={dirty ? saving : (!sandboxRunning || sandboxPushLoading)}
+                title={dirty ? "Push file đang sửa" : "Push commit hiện tại trong Cloud Sandbox"}
+                type="button"
+              >
+                {dirty ? (
+                  saving ? <Loader2 className="spin" size={14} /> : <Save size={14} />
+                ) : (
+                  sandboxPushLoading ? <Loader2 className="spin" size={14} /> : <Upload size={14} />
+                )}
+                {dirty ? "Push" : (sandboxPushLoading ? "Pushing…" : "Push Sandbox")}
               </button>
               <button
                 className="icon-button small drawer-control"
