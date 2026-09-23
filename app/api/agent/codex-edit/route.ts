@@ -622,11 +622,13 @@ export async function POST(request: NextRequest) {
 
     const innerCommand = [
       "set +e",
-      `cd ${JSON.stringify(ensuredDir)}`,
+      `cd ${JSON.stringify(ensuredDir)} || exit 97`,
+      `echo $ > ${JSON.stringify(actualPidPath)}`,
+      `trap 'CODE=$?; printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}' EXIT`,
       `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
       "CODE=$?",
-      'printf "%s" "$CODE" > .vibaocode-codex-exit.txt',
-      "exit 0",
+      `printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}`,
+      "exit $CODE",
     ].join("; ");
 
     await shell(
@@ -634,12 +636,21 @@ export async function POST(request: NextRequest) {
       [
         `cd ${JSON.stringify(ensuredDir)}`,
         `OLD_PID="$(cat ${JSON.stringify(actualPidPath)} 2>/dev/null || true)"; if [ -n "$OLD_PID" ]; then kill "$OLD_PID" >/dev/null 2>&1 || true; fi`,
-        `rm -f ${JSON.stringify(actualEventsPath)} ${JSON.stringify(actualStderrPath)} ${JSON.stringify(actualExitPath)} ${JSON.stringify(actualPidPath)}`,
+        `rm -f ${JSON.stringify(actualEventsPath)} ${JSON.stringify(actualStderrPath)} ${JSON.stringify(actualExitPath)} ${JSON.stringify(actualPidPath)} .vibaocode-codex-runner.log`,
         `date +%s%3N > .vibaocode-codex-started.txt`,
-        `nohup bash -lc ${JSON.stringify(innerCommand)} > .vibaocode-codex-runner.log 2>&1 < /dev/null &`,
-        `echo $! > ${JSON.stringify(actualPidPath)}`,
       ].join(" && "),
     );
+
+    // Important: use Vercel Sandbox detached execution, not shell "nohup &".
+    // A detached Sandbox command is owned by the VM session and keeps running
+    // after this HTTP request returns. Plain background children can be reaped
+    // when the command/session boundary closes.
+    await sandbox.runCommand({
+      cmd: "bash",
+      args: ["-lc", innerCommand],
+      cwd: ensuredDir,
+      detached: true,
+    });
 
     return NextResponse.json(
       {
