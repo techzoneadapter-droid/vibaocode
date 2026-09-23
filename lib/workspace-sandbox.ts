@@ -181,39 +181,98 @@ export async function ensurePublicRepo(
     `test -d ${JSON.stringify(dir + "/.git")} && echo yes || echo no`,
   );
 
+  const authHeader = githubToken
+    ? `Authorization: Basic ${Buffer.from(`x-access-token:${githubToken}`).toString("base64")}`
+    : "";
+
+  async function anonymousClone() {
+    return shell(
+      sandbox,
+      [
+        "GIT_TERMINAL_PROMPT=0",
+        "git",
+        "clone",
+        "--depth 1",
+        "--single-branch",
+        "--branch",
+        JSON.stringify(branch),
+        JSON.stringify(remoteUrl),
+        JSON.stringify(dir),
+      ].join(" "),
+    );
+  }
+
+  async function authenticatedClone() {
+    if (!authHeader) return null;
+    return shell(
+      sandbox,
+      [
+        "GIT_TERMINAL_PROMPT=0",
+        "git",
+        "-c",
+        `http.extraHeader=${JSON.stringify(authHeader)}`,
+        "clone",
+        "--depth 1",
+        "--single-branch",
+        "--branch",
+        JSON.stringify(branch),
+        JSON.stringify(remoteUrl),
+        JSON.stringify(dir),
+      ].join(" "),
+    );
+  }
+
+  async function anonymousFetch() {
+    return shell(
+      sandbox,
+      [
+        `cd ${JSON.stringify(dir)}`,
+        `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
+        `GIT_TERMINAL_PROMPT=0 git fetch origin ${JSON.stringify(branch)} --depth=1`,
+        `git reset --hard origin/${JSON.stringify(branch)}`,
+      ].join(" && "),
+    );
+  }
+
+  async function authenticatedFetch() {
+    if (!authHeader) return null;
+    return shell(
+      sandbox,
+      [
+        `cd ${JSON.stringify(dir)}`,
+        `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
+        `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=1`,
+        `git reset --hard origin/${JSON.stringify(branch)}`,
+      ].join(" && "),
+    );
+  }
+
   if (!exists.stdout.includes("yes")) {
-    // A previous interrupted clone can leave a non-git directory behind. Remove
-    // that partial workspace before cloning again, otherwise git clone fails with
-    // "destination path already exists and is not an empty directory".
+    // A failed/interrupted clone can leave a partial directory. Always remove
+    // it before retrying so the next clone starts from a clean workspace.
     await shell(
       sandbox,
       `mkdir -p ${JSON.stringify(reposRoot)} && rm -rf ${JSON.stringify(dir)}`,
     );
 
-    const tokenHeader = githubToken
-      ? `-c http.extraHeader=${JSON.stringify(`Authorization: Bearer ${githubToken}`)}`
-      : "";
+    // Public repositories must clone anonymously first. Passing an invalid or
+    // repo-scoped PAT to GitHub smart HTTP can turn an otherwise-public clone
+    // into a 401 and Git then tries to prompt for a username in a headless
+    // Sandbox ("could not read Username...").
+    let clone = await anonymousClone();
 
-    const cloneCommand = [
-      "git",
-      tokenHeader,
-      "clone",
-      "--depth 1",
-      "--single-branch",
-      "--branch",
-      JSON.stringify(branch),
-      JSON.stringify(remoteUrl),
-      JSON.stringify(dir),
-    ].filter(Boolean).join(" ");
+    // Only private/auth-required repos fall back to the connected GitHub token.
+    if (clone.exitCode !== 0 && authHeader) {
+      await shell(sandbox, `rm -rf ${JSON.stringify(dir)}`);
+      clone = (await authenticatedClone()) || clone;
+    }
 
-    let clone = await shell(sandbox, cloneCommand);
-
-    // Retry once after cleaning partial files. GitHub/Vercel networking can
-    // occasionally fail during sandbox wake-up and leave the target half-made.
+    // One final clean anonymous retry helps with transient sandbox wake/network
+    // failures without ever exposing the token in a remote URL.
     if (clone.exitCode !== 0) {
       await shell(sandbox, `rm -rf ${JSON.stringify(dir)}`);
       await new Promise((resolve) => setTimeout(resolve, 900));
-      clone = await shell(sandbox, cloneCommand);
+      clone = await anonymousClone();
     }
 
     if (clone.exitCode !== 0) {
@@ -229,19 +288,11 @@ export async function ensurePublicRepo(
     );
 
     if (!trackedDirty.stdout.trim()) {
-      const tokenHeader = githubToken
-        ? `-c http.extraHeader=${JSON.stringify(`Authorization: Bearer ${githubToken}`)}`
-        : "";
+      let sync = await anonymousFetch();
 
-      const sync = await shell(
-        sandbox,
-        [
-          `cd ${JSON.stringify(dir)}`,
-          `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
-          `git ${tokenHeader} fetch origin ${JSON.stringify(branch)} --depth=1`,
-          `git reset --hard origin/${JSON.stringify(branch)}`,
-        ].join(" && "),
-      );
+      if (sync.exitCode !== 0 && authHeader) {
+        sync = (await authenticatedFetch()) || sync;
+      }
 
       if (sync.exitCode !== 0) {
         throw new Error(
