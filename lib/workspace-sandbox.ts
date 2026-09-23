@@ -166,31 +166,60 @@ export async function ensurePublicRepo(
   sandbox: Sandbox,
   repo: string,
   branch: string,
+  githubToken = "",
 ) {
   if (!validRepo(repo) || !validBranch(branch)) {
     throw new Error("Repo hoặc branch không hợp lệ.");
   }
 
   const dir = repoDirectory(repo, branch);
+  const reposRoot = "/vercel/sandbox/repos";
+  const remoteUrl = `https://github.com/${repo}.git`;
+
   const exists = await shell(
     sandbox,
     `test -d ${JSON.stringify(dir + "/.git")} && echo yes || echo no`,
   );
 
   if (!exists.stdout.includes("yes")) {
-    await shell(sandbox, `mkdir -p ${JSON.stringify("/vercel/sandbox/repos")}`);
-    const clone = await run(sandbox, "git", [
+    // A previous interrupted clone can leave a non-git directory behind. Remove
+    // that partial workspace before cloning again, otherwise git clone fails with
+    // "destination path already exists and is not an empty directory".
+    await shell(
+      sandbox,
+      `mkdir -p ${JSON.stringify(reposRoot)} && rm -rf ${JSON.stringify(dir)}`,
+    );
+
+    const tokenHeader = githubToken
+      ? `-c http.extraHeader=${JSON.stringify(`Authorization: Bearer ${githubToken}`)}`
+      : "";
+
+    const cloneCommand = [
+      "git",
+      tokenHeader,
       "clone",
-      "--depth",
-      "1",
+      "--depth 1",
+      "--single-branch",
       "--branch",
-      branch,
-      `https://github.com/${repo}.git`,
-      dir,
-    ]);
+      JSON.stringify(branch),
+      JSON.stringify(remoteUrl),
+      JSON.stringify(dir),
+    ].filter(Boolean).join(" ");
+
+    let clone = await shell(sandbox, cloneCommand);
+
+    // Retry once after cleaning partial files. GitHub/Vercel networking can
+    // occasionally fail during sandbox wake-up and leave the target half-made.
     if (clone.exitCode !== 0) {
+      await shell(sandbox, `rm -rf ${JSON.stringify(dir)}`);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      clone = await shell(sandbox, cloneCommand);
+    }
+
+    if (clone.exitCode !== 0) {
+      const detail = (clone.stderr || clone.stdout || "git clone failed").trim();
       throw new Error(
-        "Không clone được repository vào Sandbox. Run Cloud hiện hỗ trợ repo GitHub public; repo private vẫn có thể đọc/sửa qua GitHub token trong editor.",
+        `Không clone được ${repo}@${branch} vào Cloud Sandbox.\n${detail.slice(-1800)}`,
       );
     }
   } else {
@@ -198,11 +227,27 @@ export async function ensurePublicRepo(
       sandbox,
       `cd ${JSON.stringify(dir)} && git diff --quiet HEAD -- || echo dirty`,
     );
+
     if (!trackedDirty.stdout.trim()) {
-      await shell(
+      const tokenHeader = githubToken
+        ? `-c http.extraHeader=${JSON.stringify(`Authorization: Bearer ${githubToken}`)}`
+        : "";
+
+      const sync = await shell(
         sandbox,
-        `cd ${JSON.stringify(dir)} && git fetch origin ${JSON.stringify(branch)} --depth=1 && git reset --hard origin/${JSON.stringify(branch)}`,
+        [
+          `cd ${JSON.stringify(dir)}`,
+          `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
+          `git ${tokenHeader} fetch origin ${JSON.stringify(branch)} --depth=1`,
+          `git reset --hard origin/${JSON.stringify(branch)}`,
+        ].join(" && "),
       );
+
+      if (sync.exitCode !== 0) {
+        throw new Error(
+          `Không đồng bộ được repository trong Cloud Sandbox.\n${(sync.stderr || sync.stdout).slice(-1800)}`,
+        );
+      }
     }
   }
 
