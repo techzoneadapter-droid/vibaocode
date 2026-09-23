@@ -199,6 +199,7 @@ export async function POST(request: NextRequest) {
     const workspaceId = String(body.workspaceId || "").trim();
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
+    const githubToken = String(body.githubToken || "").trim();
     const runId = String(body.runId || "").replace(/[^A-Za-z0-9_-]/g, "");
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
@@ -212,7 +213,7 @@ export async function POST(request: NextRequest) {
     const toolsDir = "/vercel/sandbox/.vibaocode-tools";
 
     if (action === "start") {
-      const dir = await ensurePublicRepo(sandbox, repo, branch);
+      const dir = await ensurePublicRepo(sandbox, repo, branch, githubToken);
       await installDependencies(sandbox, dir);
       const server = await startDevServer(sandbox, dir);
       if (!server.ok) {
