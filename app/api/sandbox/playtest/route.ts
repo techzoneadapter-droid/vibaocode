@@ -4,7 +4,6 @@ import {
   ensureBrowserTester,
   getWorkspaceSandbox,
   installDependencies,
-  projectWorkspaceId,
   repoDirectory,
   shell,
   startDevServer,
@@ -88,7 +87,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
+    const sandbox = await getWorkspaceSandbox(workspaceId);
     const dir = await ensurePublicRepo(sandbox, repo, branch);
     await installDependencies(sandbox, dir);
     const server = await startDevServer(sandbox, dir);
