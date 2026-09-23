@@ -652,6 +652,7 @@ export default function Workspace() {
           workspaceId,
           repo,
           branch,
+          githubToken,
         }),
       });
       const data = await response.json();
@@ -688,6 +689,7 @@ export default function Workspace() {
           workspaceId,
           repo,
           branch,
+          githubToken,
           files: [{ path, content }],
         }),
       });
@@ -773,6 +775,7 @@ export default function Workspace() {
           workspaceId,
           repo,
           branch,
+          githubToken,
         }),
       });
       const startData = await startResponse.json();
