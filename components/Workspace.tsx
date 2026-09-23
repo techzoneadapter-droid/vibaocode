@@ -369,11 +369,21 @@ export default function Workspace() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    let currentWorkspaceId = sessionStorage.getItem("vibaocode.workspaceId") || "";
+    // Keep one stable cloud workspace per browser so reopening Vibaocode does
+    // not create a brand-new persistent Sandbox (and another snapshot chain).
+    // Migrate the previous session-scoped id when available to reuse the
+    // Sandbox that this browser is already using.
+    let currentWorkspaceId =
+      localStorage.getItem("vibaocode.workspaceId") ||
+      sessionStorage.getItem("vibaocode.workspaceId") ||
+      "";
+
     if (!currentWorkspaceId) {
       currentWorkspaceId = crypto.randomUUID();
-      sessionStorage.setItem("vibaocode.workspaceId", currentWorkspaceId);
     }
+
+    localStorage.setItem("vibaocode.workspaceId", currentWorkspaceId);
+    sessionStorage.setItem("vibaocode.workspaceId", currentWorkspaceId);
     setWorkspaceId(currentWorkspaceId);
 
     const saved = sessionStorage.getItem("vibaocode.settings");
