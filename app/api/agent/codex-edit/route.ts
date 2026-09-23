@@ -6,6 +6,7 @@ import {
   installDependencies,
   repoDirectory,
   reserveLongAgentSession,
+  pushWorkspaceHead,
   run,
   runProjectChecks,
   shell,
@@ -184,6 +185,30 @@ export async function POST(request: NextRequest) {
 
     const sandbox = await getWorkspaceSandbox(workspaceId);
     const dir = repoDirectory(repo, branch);
+
+    if (action === "push") {
+      if (!githubToken) {
+        return NextResponse.json(
+          { error: "Thiếu GitHub token để push Sandbox." },
+          { status: 401 },
+        );
+      }
+
+      const repoCheck = await shell(
+        sandbox,
+        `test -d ${JSON.stringify(dir + "/.git")} && echo yes || true`,
+      );
+      if (!repoCheck.stdout.includes("yes")) {
+        return NextResponse.json(
+          { error: "Cloud Workspace không còn repository để push." },
+          { status: 409 },
+        );
+      }
+
+      const result = await pushWorkspaceHead(sandbox, dir, branch, githubToken);
+      return NextResponse.json(result, { status: result.verified ? 200 : 409 });
+    }
+
     const progressPath = `${dir}/.vibaocode-codex-progress.json`;
     const eventsPath = `${dir}/.vibaocode-codex-events.jsonl`;
     const stderrPath = `${dir}/.vibaocode-codex-stderr.log`;
