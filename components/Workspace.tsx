@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitPullRequest,
   Github,
+  ImagePlus,
   KeyRound,
   Loader2,
   MonitorSmartphone,
@@ -25,6 +26,8 @@ import {
   Search,
   Settings,
   Sparkles,
+  Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -77,6 +80,17 @@ type ProjectProposal = {
   originalContent: string;
   sha: string;
   size: number;
+};
+
+type ReferenceImage = {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  path: string;
+  kind: "style" | "ui" | "character" | "environment" | "logo-icon" | "other";
+  note: string;
+  active: boolean;
 };
 
 type CodexLimitWindow = {
@@ -318,6 +332,9 @@ export default function Workspace() {
   const [aiProgressDetail, setAiProgressDetail] = useState("");
   const [aiElapsedSeconds, setAiElapsedSeconds] = useState(0);
   const [aiRunUsage, setAiRunUsage] = useState<Record<string, number> | null>(null);
+  const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
+  const [referenceUploading, setReferenceUploading] = useState(false);
+  const [referenceDragOver, setReferenceDragOver] = useState(false);
   const [aiScope, setAiScope] = useState<"file" | "project">("project");
   const [projectProposals, setProjectProposals] = useState<ProjectProposal[]>([]);
   const [projectSummary, setProjectSummary] = useState("");
@@ -405,6 +422,24 @@ export default function Workspace() {
     }
   }, [codexStatus, workspaceId]);
 
+  useEffect(() => {
+    if (!workspaceId || !repo) return;
+    const key = `vibaocode.references.${workspaceId}.${repo}@${branch}`;
+    try {
+      const saved = sessionStorage.getItem(key);
+      const parsed = saved ? JSON.parse(saved) : [];
+      setReferenceImages(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setReferenceImages([]);
+    }
+  }, [workspaceId, repo, branch]);
+
+  useEffect(() => {
+    if (!workspaceId || !repo) return;
+    const key = `vibaocode.references.${workspaceId}.${repo}@${branch}`;
+    sessionStorage.setItem(key, JSON.stringify(referenceImages));
+  }, [referenceImages, workspaceId, repo, branch]);
+
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
@@ -473,6 +508,7 @@ export default function Workspace() {
     setProjectProposals([]);
     setProjectSummary("");
     setProjectPlan("");
+    setReferenceImages([]);
     setSandboxRunning(false);
     setPreviewUrl("");
     setNotice(`Đã chọn ${fullName}. Bấm Load để mở dự án.`);
@@ -1041,6 +1077,122 @@ export default function Workspace() {
     }
   }
 
+  function referencePreviewUrl(item: ReferenceImage) {
+    const query = new URLSearchParams({
+      workspaceId,
+      repo,
+      branch,
+      path: item.path,
+    });
+    return `/api/sandbox/reference-images?${query.toString()}`;
+  }
+
+  async function uploadReferenceFiles(files: File[]) {
+    const available = Math.max(0, 5 - referenceImages.length);
+    const selectedFiles = files
+      .filter((file) => ["image/png", "image/jpeg", "image/webp"].includes(file.type))
+      .slice(0, available);
+
+    if (!selectedFiles.length) {
+      setError(
+        referenceImages.length >= 5
+          ? "Tối đa 5 ảnh tham chiếu cho một project."
+          : "Chỉ hỗ trợ PNG, JPG/JPEG và WEBP.",
+      );
+      return;
+    }
+
+    setReferenceUploading(true);
+    setError("");
+    setNotice(`Đang tải ${selectedFiles.length} ảnh tham chiếu…`);
+
+    try {
+      const uploaded: ReferenceImage[] = [];
+      for (const file of selectedFiles) {
+        if (file.size > 4 * 1024 * 1024) {
+          throw new Error(`${file.name} lớn hơn 4 MB.`);
+        }
+
+        const form = new FormData();
+        form.append("workspaceId", workspaceId);
+        form.append("repo", repo);
+        form.append("branch", branch);
+        form.append("file", file);
+
+        const response = await fetch("/api/sandbox/reference-images", {
+          method: "POST",
+          headers: apiHeaders(),
+          body: form,
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Không upload được ${file.name}.`);
+
+        uploaded.push({
+          id: data.id,
+          name: data.name,
+          size: data.size,
+          mimeType: data.mimeType,
+          path: data.path,
+          kind: "style",
+          note: "",
+          active: true,
+        });
+      }
+
+      setReferenceImages((current) => [...current, ...uploaded].slice(0, 5));
+      setNotice(`Đã thêm ${uploaded.length} ảnh tham chiếu • Codex sẽ nhận ảnh trực tiếp`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload ảnh thất bại.");
+    } finally {
+      setReferenceUploading(false);
+      setReferenceDragOver(false);
+    }
+  }
+
+  function patchReferenceImage(id: string, patch: Partial<ReferenceImage>) {
+    setReferenceImages((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+    );
+  }
+
+  async function removeReferenceImage(item: ReferenceImage) {
+    setReferenceImages((current) => current.filter((entry) => entry.id !== item.id));
+    try {
+      await fetch("/api/sandbox/reference-images", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspaceId,
+          repo,
+          branch,
+          path: item.path,
+        }),
+      });
+    } catch {
+      // UI removal should still succeed if cleanup in the ephemeral workspace fails.
+    }
+  }
+
+  async function clearReferenceImages() {
+    const items = [...referenceImages];
+    setReferenceImages([]);
+    await Promise.allSettled(
+      items.map((item) =>
+        fetch("/api/sandbox/reference-images", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            workspaceId,
+            repo,
+            branch,
+            path: item.path,
+          }),
+        }),
+      ),
+    );
+    setNotice("Đã xóa ảnh tham chiếu");
+  }
+
   async function askAI() {
     if (!selected || !aiReady) return;
     setAiLoading(true);
@@ -1092,6 +1244,16 @@ export default function Workspace() {
     try {
       const useCodexAccount = aiProvider === "codex-account";
       const useExternalProvider = aiProvider === "claude-api" || aiProvider === "gemini-api";
+      const activeReferences = referenceImages.filter((item) => item.active);
+      const referenceText = activeReferences.length
+        ? "\n\nREFERENCE IMAGE METADATA:\n" +
+          activeReferences
+            .map(
+              (item, index) =>
+                `${index + 1}. ${item.name} • type=${item.kind}${item.note ? ` • note=${item.note}` : ""}`,
+            )
+            .join("\n")
+        : "";
       let data: any;
 
       if (useCodexAccount) {
@@ -1117,6 +1279,12 @@ export default function Workspace() {
             prompt,
             codexModel,
             codexReasoning,
+            referenceImages: activeReferences.map((item) => ({
+              path: item.path,
+              name: item.name,
+              kind: item.kind,
+              note: item.note,
+            })),
           }),
         });
         const startData = await startResponse.json();
@@ -1223,7 +1391,7 @@ export default function Workspace() {
                   repo,
                   branch,
                   githubToken,
-                  prompt,
+                  prompt: prompt + referenceText,
                   projectContext,
                 }
               : {
@@ -1232,7 +1400,7 @@ export default function Workspace() {
                   githubToken,
                   apiKey: openAIKey,
                   model,
-                  prompt,
+                  prompt: prompt + referenceText,
                   projectContext,
                 }
           ),
@@ -2090,6 +2258,134 @@ export default function Workspace() {
                       : "Load GitHub project để bắt đầu"
                     : selected?.path || "Chưa chọn file"}
                 </span>
+              </div>
+
+              <div className="reference-images-card">
+                <div className="reference-images-head">
+                  <div>
+                    <span className="eyebrow">REFERENCE IMAGES</span>
+                    <strong>Ảnh tham chiếu</strong>
+                  </div>
+                  <div className="reference-images-actions">
+                    {referenceImages.length ? (
+                      <button className="text-button" onClick={clearReferenceImages} type="button">
+                        <Trash2 size={11} /> Xóa tất cả
+                      </button>
+                    ) : null}
+                    <label className="reference-upload-button">
+                      {referenceUploading ? <Loader2 className="spin" size={12} /> : <ImagePlus size={12} />}
+                      Thêm ảnh
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp"
+                        multiple
+                        hidden
+                        disabled={referenceUploading || referenceImages.length >= 5}
+                        onChange={(event) => {
+                          const files = Array.from(event.target.files || []);
+                          event.currentTarget.value = "";
+                          void uploadReferenceFiles(files);
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div
+                  className={`reference-dropzone ${referenceDragOver ? "dragging" : ""} ${referenceImages.length ? "compact" : ""}`}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    setReferenceDragOver(true);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    setReferenceDragOver(true);
+                  }}
+                  onDragLeave={(event) => {
+                    event.preventDefault();
+                    setReferenceDragOver(false);
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setReferenceDragOver(false);
+                    void uploadReferenceFiles(Array.from(event.dataTransfer.files || []));
+                  }}
+                >
+                  <Upload size={16} />
+                  <span>
+                    {referenceImages.length
+                      ? `${referenceImages.filter((item) => item.active).length}/${referenceImages.length} ảnh đang gửi cho AI`
+                      : "Kéo ảnh mẫu vào đây • PNG/JPG/WEBP • tối đa 5 ảnh"}
+                  </span>
+                  <small>Codex nhận ảnh trực tiếp bằng vision; mỗi ảnh tối đa 4 MB.</small>
+                </div>
+
+                {referenceImages.length ? (
+                  <div className="reference-image-list">
+                    {referenceImages.map((item) => (
+                      <div className={`reference-image-item ${item.active ? "active" : ""}`} key={item.id}>
+                        <button
+                          className="reference-thumb"
+                          onClick={() => window.open(referencePreviewUrl(item), "_blank", "noopener,noreferrer")}
+                          type="button"
+                          title="Mở ảnh lớn"
+                        >
+                          <img src={referencePreviewUrl(item)} alt={item.name} />
+                        </button>
+                        <div className="reference-image-meta">
+                          <div className="reference-image-title">
+                            <strong title={item.name}>{item.name}</strong>
+                            <span>{formatBytes(item.size)}</span>
+                          </div>
+                          <div className="reference-image-controls">
+                            <select
+                              value={item.kind}
+                              onChange={(event) =>
+                                patchReferenceImage(item.id, {
+                                  kind: event.target.value as ReferenceImage["kind"],
+                                })
+                              }
+                            >
+                              <option value="style">Style</option>
+                              <option value="ui">UI</option>
+                              <option value="character">Character</option>
+                              <option value="environment">Environment</option>
+                              <option value="logo-icon">Logo / Icon</option>
+                              <option value="other">Other</option>
+                            </select>
+                            <label className="reference-toggle">
+                              <input
+                                type="checkbox"
+                                checked={item.active}
+                                onChange={(event) =>
+                                  patchReferenceImage(item.id, { active: event.target.checked })
+                                }
+                              />
+                              AI
+                            </label>
+                            <button
+                              className="reference-delete"
+                              onClick={() => void removeReferenceImage(item)}
+                              type="button"
+                              title="Xóa ảnh"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                          <input
+                            className="reference-note"
+                            value={item.note}
+                            maxLength={180}
+                            onChange={(event) =>
+                              patchReferenceImage(item.id, { note: event.target.value })
+                            }
+                            placeholder="Ghi chú: ví dụ phong cách voxel tươi sáng…"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="prompt-composer">
