@@ -173,9 +173,233 @@ export async function POST(request: NextRequest) {
     const sandbox = await getWorkspaceSandbox(workspaceId);
     const dir = repoDirectory(repo, branch);
     const progressPath = `${dir}/.vibaocode-codex-progress.json`;
+    const eventsPath = `${dir}/.vibaocode-codex-events.jsonl`;
+    const stderrPath = `${dir}/.vibaocode-codex-stderr.log`;
+    const exitPath = `${dir}/.vibaocode-codex-exit.txt`;
+    const pidPath = `${dir}/.vibaocode-codex.pid`;
 
     if (action === "status") {
-      return NextResponse.json(await readProgress(sandbox, progressPath));
+      const state = await readProgress(sandbox, progressPath);
+      const exitCheck = await shell(
+        sandbox,
+        `test -f ${JSON.stringify(exitPath)} && cat ${JSON.stringify(exitPath)} || true`,
+      );
+      const finished = Boolean(exitCheck.stdout.trim());
+
+      if (!finished) {
+        const eventsNow = await shell(
+          sandbox,
+          `tail -n 180 ${JSON.stringify(eventsPath)} 2>/dev/null || true`,
+        );
+
+        if (eventsNow.stdout.trim()) {
+          const dynamic = progressFromEvents(eventsNow.stdout);
+          await writeProgress(sandbox, progressPath, dynamic);
+          const latest = await readProgress(sandbox, progressPath);
+          const pidCheck = await shell(
+            sandbox,
+            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo running; fi`,
+          );
+          return NextResponse.json({
+            ...latest,
+            finished: false,
+            running: pidCheck.stdout.includes("running"),
+            exitCode: null,
+          });
+        }
+      }
+
+      if (finished && state.percent < 70) {
+        await writeProgress(sandbox, progressPath, {
+          percent: 70,
+          phase: "Codex đã sửa xong • đang chuẩn bị kết quả…",
+        });
+      }
+
+      const latest = await readProgress(sandbox, progressPath);
+      return NextResponse.json({
+        ...latest,
+        finished,
+        running: !finished,
+        exitCode: finished ? Number(exitCheck.stdout.trim() || "1") : null,
+      });
+    }
+
+    if (action === "cancel") {
+      await shell(
+        sandbox,
+        `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
+      );
+      await writeProgress(sandbox, progressPath, {
+        percent: 0,
+        phase: "Agent đã được dừng",
+      });
+      return NextResponse.json({ cancelled: true });
+    }
+
+    if (action === "result") {
+      const repoCheck = await shell(
+        sandbox,
+        `test -d ${JSON.stringify(dir + "/.git")} && echo yes || true`,
+      );
+      if (!repoCheck.stdout.includes("yes")) {
+        return NextResponse.json(
+          { error: "Cloud Workspace không còn repository để lấy kết quả." },
+          { status: 409 },
+        );
+      }
+
+      const exitResult = await shell(
+        sandbox,
+        `cat ${JSON.stringify(exitPath)} 2>/dev/null || true`,
+      );
+      if (!exitResult.stdout.trim()) {
+        return NextResponse.json(
+          { pending: true, error: "Codex vẫn đang xử lý." },
+          { status: 409 },
+        );
+      }
+
+      const codexExitCode = Number(exitResult.stdout.trim() || "1");
+      const codex = await ensureCodexCli(sandbox);
+
+      const events = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && cat .vibaocode-codex-events.jsonl 2>/dev/null || true`,
+      );
+      const stderr = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && tail -n 240 .vibaocode-codex-stderr.log 2>/dev/null || true`,
+      );
+
+      const agentSummary = lastAgentMessage(events.stdout);
+      const sandboxFailureText = `${stderr.stdout}\n${events.stdout}\n${agentSummary}`;
+
+      if (/bwrap:|bubblewrap|unexpected capabilities but not setuid|failed rtm_newaddr/i.test(sandboxFailureText)) {
+        await writeProgress(sandbox, progressPath, {
+          percent: 0,
+          phase: "Lỗi Linux sandbox lồng nhau",
+          detail: stderr.stdout.slice(-500),
+        });
+        return NextResponse.json(
+          {
+            error:
+              "Codex runtime vẫn chạm Bubblewrap dù Cloud Sandbox đã cách ly. Hãy chạy lại với deployment Vibaocode mới nhất.",
+            codexLog: sandboxFailureText.slice(-8000),
+            codexVersion: codex.version,
+            requestedModel: requestedModel || null,
+          },
+          { status: 500 },
+        );
+      }
+
+      await writeProgress(sandbox, progressPath, {
+        percent: 74,
+        phase: "Đang thu thập các file Codex đã sửa…",
+      });
+
+      const changed = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && { git diff --name-only; git ls-files --others --exclude-standard; } | awk 'NF' | sort -u`,
+      );
+
+      const paths = changed.stdout
+        .split("\n")
+        .map((path) => path.trim())
+        .filter(Boolean)
+        .filter(validRelativePath)
+        .filter((path) => !path.startsWith(".vibaocode-"))
+        .slice(0, 60);
+
+      const files = [];
+      for (const filePath of paths) {
+        const buffer = await sandbox.readFileToBuffer({ path: `${dir}/${filePath}` });
+        if (!buffer || buffer.length > 1_500_000) continue;
+
+        const original = await run(sandbox, "git", [
+          "-C",
+          dir,
+          "show",
+          `HEAD:${filePath}`,
+        ]);
+
+        const blobSha = await run(sandbox, "git", [
+          "-C",
+          dir,
+          "rev-parse",
+          `HEAD:${filePath}`,
+        ]);
+
+        files.push({
+          path: filePath,
+          content: buffer.toString("utf8"),
+          originalContent: original.exitCode === 0 ? original.stdout : "",
+          reason: "Codex đã thay đổi file này trong cloud workspace.",
+          sha: blobSha.exitCode === 0 ? blobSha.stdout.trim() : "",
+          size: buffer.length,
+        });
+      }
+
+      await writeProgress(sandbox, progressPath, {
+        percent: 80,
+        phase: "Đang cài/đồng bộ dependencies…",
+        detail: `${files.length} file thay đổi`,
+      });
+
+      await installDependencies(sandbox, dir);
+
+      await writeProgress(sandbox, progressPath, {
+        percent: 87,
+        phase: "Đang khởi động Live Preview…",
+      });
+
+      const server = await startDevServer(sandbox, dir);
+
+      await writeProgress(sandbox, progressPath, {
+        percent: 93,
+        phase: "Đang chạy Auto Test…",
+      });
+
+      const checks = await runProjectChecks(sandbox, dir);
+
+      await writeProgress(sandbox, progressPath, {
+        percent: 100,
+        phase: checks.passed ? "Hoàn tất • Test PASS" : "Hoàn tất • cần review lỗi test",
+        detail: `${files.length} file thay đổi`,
+      });
+
+      if (codexExitCode !== 0 && files.length === 0) {
+        return NextResponse.json(
+          {
+            error:
+              agentSummary ||
+              stderr.stdout.slice(-4000) ||
+              "Codex kết thúc với lỗi và không tạo thay đổi.",
+            codexExitCode,
+          },
+          { status: 500 },
+        );
+      }
+
+      return NextResponse.json({
+        model: `${requestedModel || "Codex default"} • ${requestedReasoning || "default reasoning"} • ${codex.version}`,
+        summary:
+          agentSummary ||
+          (codexExitCode === 0
+            ? "Codex đã hoàn tất chỉnh sửa."
+            : "Codex có cảnh báo; thay đổi đã được giữ lại để review."),
+        files,
+        previewUrl: server.previewUrl,
+        serverRunning: server.ok,
+        checks,
+        codexExitCode,
+        codexLog: stderr.stdout.slice(-12000),
+        usage: usageFromEvents(events.stdout),
+        progress: await readProgress(sandbox, progressPath),
+        sandboxMode: "vercel-isolated + async-codex + latest-codex + ignore-user-config + danger-full-access",
+        selectedModel: requestedModel || null,
+        selectedReasoning: requestedReasoning || null,
+      });
     }
 
     if (!prompt) {
@@ -225,10 +449,10 @@ export async function POST(request: NextRequest) {
     }
 
     const promptPath = `${ensuredDir}/.vibaocode-codex-prompt.txt`;
-    const eventsPath = `${ensuredDir}/.vibaocode-codex-events.jsonl`;
-    const stderrPath = `${ensuredDir}/.vibaocode-codex-stderr.log`;
-    const exitPath = `${ensuredDir}/.vibaocode-codex-exit.txt`;
-    const pidPath = `${ensuredDir}/.vibaocode-codex.pid`;
+    const actualEventsPath = `${ensuredDir}/.vibaocode-codex-events.jsonl`;
+    const actualStderrPath = `${ensuredDir}/.vibaocode-codex-stderr.log`;
+    const actualExitPath = `${ensuredDir}/.vibaocode-codex-exit.txt`;
+    const actualPidPath = `${ensuredDir}/.vibaocode-codex.pid`;
 
     await sandbox.writeFiles([
       {
@@ -255,7 +479,7 @@ export async function POST(request: NextRequest) {
     await writeProgress(sandbox, progressPath, {
       percent: 15,
       phase: "Codex đang khởi động Agent…",
-      detail: "Cloud Sandbox đã cách ly dự án; tắt lớp Linux sandbox lồng nhau để tránh lỗi bwrap.",
+      detail: "Agent chạy nền trong persistent Cloud Sandbox; yêu cầu lớn không còn bị giới hạn bởi HTTP request.",
     });
 
     const innerCommand = [
@@ -271,196 +495,24 @@ export async function POST(request: NextRequest) {
       sandbox,
       [
         `cd ${JSON.stringify(ensuredDir)}`,
-        `rm -f ${JSON.stringify(eventsPath)} ${JSON.stringify(stderrPath)} ${JSON.stringify(exitPath)} ${JSON.stringify(pidPath)}`,
+        `OLD_PID="$(cat ${JSON.stringify(actualPidPath)} 2>/dev/null || true)"; if [ -n "$OLD_PID" ]; then kill "$OLD_PID" >/dev/null 2>&1 || true; fi`,
+        `rm -f ${JSON.stringify(actualEventsPath)} ${JSON.stringify(actualStderrPath)} ${JSON.stringify(actualExitPath)} ${JSON.stringify(actualPidPath)}`,
         `nohup bash -lc ${JSON.stringify(innerCommand)} > .vibaocode-codex-runner.log 2>&1 < /dev/null &`,
-        `echo $! > ${JSON.stringify(pidPath)}`,
+        `echo $! > ${JSON.stringify(actualPidPath)}`,
       ].join(" && "),
     );
 
-    let finished = false;
-    for (let i = 0; i < 68; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-
-      const exitCheck = await shell(
-        sandbox,
-        `test -f ${JSON.stringify(exitPath)} && cat ${JSON.stringify(exitPath)} || true`,
-      );
-
-      const eventsNow = await shell(
-        sandbox,
-        `tail -n 180 ${JSON.stringify(eventsPath)} 2>/dev/null || true`,
-      );
-
-      const dynamic = progressFromEvents(eventsNow.stdout);
-      await writeProgress(sandbox, progressPath, dynamic);
-
-      if (exitCheck.stdout.trim()) {
-        finished = true;
-        break;
-      }
-    }
-
-    if (!finished) {
-      await shell(
-        sandbox,
-        `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
-      );
-      await writeProgress(sandbox, progressPath, {
-        percent: 0,
-        phase: "Codex quá thời gian xử lý",
-      });
-      return NextResponse.json(
-        {
-          error:
-            "Codex chạy quá thời gian cho một lượt Agent. Hãy chia yêu cầu thành một đợt nhỏ hơn hoặc chạy lại.",
-        },
-        { status: 504 },
-      );
-    }
-
-    const exitResult = await shell(
-      sandbox,
-      `cat ${JSON.stringify(exitPath)} 2>/dev/null || printf "1"`,
+    return NextResponse.json(
+      {
+        started: true,
+        running: true,
+        model: requestedModel || "Codex default",
+        reasoning: requestedReasoning || "default",
+        version: codex.version,
+        progress: await readProgress(sandbox, progressPath),
+      },
+      { status: 202 },
     );
-    const codexExitCode = Number(exitResult.stdout.trim() || "1");
-
-    const events = await shell(
-      sandbox,
-      `cd ${JSON.stringify(ensuredDir)} && cat .vibaocode-codex-events.jsonl 2>/dev/null || true`,
-    );
-    const stderr = await shell(
-      sandbox,
-      `cd ${JSON.stringify(ensuredDir)} && tail -n 240 .vibaocode-codex-stderr.log 2>/dev/null || true`,
-    );
-
-    const agentSummary = lastAgentMessage(events.stdout);
-    const sandboxFailureText = `${stderr.stdout}\n${events.stdout}\n${agentSummary}`;
-
-    if (/bwrap:|bubblewrap|unexpected capabilities but not setuid|failed rtm_newaddr/i.test(sandboxFailureText)) {
-      await writeProgress(sandbox, progressPath, {
-        percent: 0,
-        phase: "Lỗi Linux sandbox lồng nhau",
-        detail: stderr.stdout.slice(-500),
-      });
-      return NextResponse.json(
-        {
-          error:
-            "Codex runtime vẫn chạm Bubblewrap dù Cloud Sandbox đã cách ly. Vibaocode đã ép dùng Codex CLI mới nhất + ignore user config + danger-full-access. Hãy chạy lại sau khi deployment mới hoàn tất.",
-          codexLog: sandboxFailureText.slice(-8000),
-          codexVersion: codex.version,
-          requestedModel: requestedModel || null,
-        },
-        { status: 500 },
-      );
-    }
-
-    await writeProgress(sandbox, progressPath, {
-      percent: 70,
-      phase: "Đang thu thập các file Codex đã sửa…",
-    });
-
-    const changed = await shell(
-      sandbox,
-      `cd ${JSON.stringify(ensuredDir)} && { git diff --name-only; git ls-files --others --exclude-standard; } | awk 'NF' | sort -u`,
-    );
-
-    const paths = changed.stdout
-      .split("\n")
-      .map((path) => path.trim())
-      .filter(Boolean)
-      .filter(validRelativePath)
-      .filter((path) => !path.startsWith(".vibaocode-"))
-      .slice(0, 40);
-
-    const files = [];
-    for (const path of paths) {
-      const buffer = await sandbox.readFileToBuffer({ path: `${ensuredDir}/${path}` });
-      if (!buffer || buffer.length > 1_500_000) continue;
-
-      const original = await run(sandbox, "git", [
-        "-C",
-        ensuredDir,
-        "show",
-        `HEAD:${path}`,
-      ]);
-
-      const blobSha = await run(sandbox, "git", [
-        "-C",
-        ensuredDir,
-        "rev-parse",
-        `HEAD:${path}`,
-      ]);
-
-      files.push({
-        path,
-        content: buffer.toString("utf8"),
-        originalContent: original.exitCode === 0 ? original.stdout : "",
-        reason: "Codex đã thay đổi file này trong cloud workspace.",
-        sha: blobSha.exitCode === 0 ? blobSha.stdout.trim() : "",
-        size: buffer.length,
-      });
-    }
-
-    await writeProgress(sandbox, progressPath, {
-      percent: 77,
-      phase: "Đang cài/đồng bộ dependencies…",
-      detail: `${files.length} file thay đổi`,
-    });
-
-    await installDependencies(sandbox, ensuredDir);
-
-    await writeProgress(sandbox, progressPath, {
-      percent: 84,
-      phase: "Đang khởi động Live Preview…",
-    });
-
-    const server = await startDevServer(sandbox, ensuredDir);
-
-    await writeProgress(sandbox, progressPath, {
-      percent: 91,
-      phase: "Đang chạy Auto Test…",
-    });
-
-    const checks = await runProjectChecks(sandbox, ensuredDir);
-
-    await writeProgress(sandbox, progressPath, {
-      percent: 100,
-      phase: checks.passed ? "Hoàn tất • Test PASS" : "Hoàn tất • cần review lỗi test",
-      detail: `${files.length} file thay đổi`,
-    });
-
-    if (codexExitCode !== 0 && files.length === 0) {
-      return NextResponse.json(
-        {
-          error:
-            agentSummary ||
-            stderr.stdout.slice(-4000) ||
-            "Codex kết thúc với lỗi và không tạo thay đổi.",
-          codexExitCode,
-        },
-        { status: 500 },
-      );
-    }
-
-    return NextResponse.json({
-      model: `${requestedModel || "Codex default"} • ${requestedReasoning || "default reasoning"} • ${codex.version}`,
-      summary:
-        lastAgentMessage(events.stdout) ||
-        (codexExitCode === 0
-          ? "Codex đã hoàn tất chỉnh sửa."
-          : "Codex có cảnh báo; thay đổi đã được giữ lại để review."),
-      files,
-      previewUrl: server.previewUrl,
-      serverRunning: server.ok,
-      checks,
-      codexExitCode,
-      codexLog: stderr.stdout.slice(-12000),
-      usage: usageFromEvents(events.stdout),
-      progress: await readProgress(sandbox, progressPath),
-      sandboxMode: "vercel-isolated + latest-codex + ignore-user-config + danger-full-access",
-      selectedModel: requestedModel || null,
-      selectedReasoning: requestedReasoning || null,
-    });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Codex agent failed." },
