@@ -181,17 +181,40 @@ export async function POST(request: NextRequest) {
 
     if (action === "status") {
       const state = await readProgress(sandbox, progressPath);
+      const commandIdResult = await shell(
+        sandbox,
+        `cat ${JSON.stringify(dir + "/.vibaocode-codex-command.txt")} 2>/dev/null || true`,
+      );
+      const commandId = commandIdResult.stdout.trim();
+
       const exitCheck = await shell(
         sandbox,
         `test -f ${JSON.stringify(exitPath)} && cat ${JSON.stringify(exitPath)} || true`,
       );
-      const finished = Boolean(exitCheck.stdout.trim());
 
-      const pidCheck = await shell(
-        sandbox,
-        `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo running; fi`,
-      );
-      const running = pidCheck.stdout.includes("running");
+      let commandExitCode: number | null = null;
+      let commandRunning = false;
+      let commandLookupError = "";
+
+      if (commandId) {
+        try {
+          const command = await sandbox.getCommand(commandId);
+          commandExitCode =
+            typeof command.exitCode === "number" ? command.exitCode : null;
+          commandRunning = commandExitCode === null;
+        } catch (error) {
+          commandLookupError =
+            error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      const fileExitCode = exitCheck.stdout.trim()
+        ? Number(exitCheck.stdout.trim())
+        : null;
+      const effectiveExitCode =
+        commandExitCode !== null ? commandExitCode : fileExitCode;
+      const finished = effectiveExitCode !== null;
+      const running = commandRunning && !finished;
 
       const diagnostics = await shell(
         sandbox,
@@ -210,13 +233,49 @@ export async function POST(request: NextRequest) {
       const eventMtimeMs = Number(eventMtimeRaw || 0) * 1000;
       const stderrSize = Number(stderrSizeRaw || 0);
       const elapsedSeconds =
-        startedAtMs > 0 ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)) : 0;
+        startedAtMs > 0
+          ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000))
+          : 0;
       const silentSeconds =
         eventMtimeMs > 0
           ? Math.max(0, Math.floor((Date.now() - eventMtimeMs) / 1000))
           : elapsedSeconds;
 
-      if (!finished && running && eventSize > 0) {
+      if (finished) {
+        // Make result collection independent of whether the bash trap managed to
+        // write the exit marker. Vercel's command metadata is authoritative.
+        if (!exitCheck.stdout.trim()) {
+          await shell(
+            sandbox,
+            `printf '%s' ${JSON.stringify(String(effectiveExitCode ?? 1))} > ${JSON.stringify(exitPath)}`,
+          );
+        }
+
+        if (state.percent < 70) {
+          await writeProgress(sandbox, progressPath, {
+            percent: 70,
+            phase:
+              effectiveExitCode === 0
+                ? "Codex đã sửa xong • đang chuẩn bị kết quả…"
+                : "Codex đã dừng • đang đọc lỗi…",
+            detail: commandId ? `command ${commandId}` : undefined,
+          });
+        }
+
+        const latest = await readProgress(sandbox, progressPath);
+        return NextResponse.json({
+          ...latest,
+          finished: true,
+          running: false,
+          exitCode: effectiveExitCode,
+          elapsedSeconds,
+          silentSeconds,
+          eventSize,
+          commandId: commandId || null,
+        });
+      }
+
+      if (running && eventSize > 0) {
         const eventsNow = await shell(
           sandbox,
           `tail -n 220 ${JSON.stringify(eventsPath)} 2>/dev/null || true`,
@@ -233,25 +292,34 @@ export async function POST(request: NextRequest) {
           silentSeconds,
           eventSize,
           heartbeat: true,
+          commandId,
         });
       }
 
-      if (!finished && running && eventSize === 0) {
+      if (running) {
         const stderrTail = await shell(
           sandbox,
-          `tail -n 100 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
+          `tail -n 120 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
         );
         const runnerTail = await shell(
           sandbox,
-          `tail -n 100 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
+          `tail -n 120 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
         );
         const failureText = `${stderrTail.stdout}\n${runnerTail.stdout}`.trim();
 
-        if (failureText && /error|fatal|invalid|unknown option|not found|denied|failed|bwrap|bubblewrap/i.test(failureText)) {
-          await shell(
-            sandbox,
-            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
-          );
+        if (
+          failureText &&
+          /fatal|invalid|unknown option|command not found|permission denied|bwrap|bubblewrap/i.test(
+            failureText,
+          )
+        ) {
+          try {
+            const command = await sandbox.getCommand(commandId);
+            await command.kill("SIGTERM");
+          } catch {
+            // It may have exited between the status lookup and kill.
+          }
+
           await writeProgress(sandbox, progressPath, {
             percent: 0,
             phase: "Codex khởi động thất bại",
@@ -265,33 +333,37 @@ export async function POST(request: NextRequest) {
             running: false,
             exitCode: null,
             elapsedSeconds,
+            commandId,
             error: failureText.slice(-4000),
           });
         }
 
-        // JSON mode normally emits startup events quickly. If absolutely no event
-        // is produced for 8 minutes, the process is considered wedged and is
-        // stopped automatically so the user does not waste 15–30 minutes.
-        if (elapsedSeconds >= 480) {
-          await shell(
-            sandbox,
-            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
-          );
+        if (elapsedSeconds >= 480 && eventSize === 0) {
+          try {
+            const command = await sandbox.getCommand(commandId);
+            await command.kill("SIGTERM");
+          } catch {
+            // Best effort.
+          }
+
           await writeProgress(sandbox, progressPath, {
             percent: 0,
             phase: "Codex bị treo khi khởi động",
-            detail: "Không có event nào sau 8 phút. Agent đã được tự động dừng.",
+            detail:
+              "Command vẫn tồn tại nhưng không có event nào sau 8 phút. Agent đã được tự động dừng.",
           });
           return NextResponse.json({
             percent: 0,
             phase: "Codex bị treo khi khởi động",
-            detail: "Không có event nào sau 8 phút. Agent đã được tự động dừng.",
+            detail:
+              "Command vẫn tồn tại nhưng không có event nào sau 8 phút. Agent đã được tự động dừng.",
             finished: true,
             running: false,
             exitCode: null,
             elapsedSeconds,
+            commandId,
             error:
-              "Codex không phát bất kỳ event nào trong 8 phút nên Vibaocode đã tự dừng process. Hãy chạy lại; nếu lặp lại, đổi Reasoning từ High xuống Medium để kiểm tra runtime.",
+              "Codex command chạy nhưng không phát event JSON trong 8 phút. Hãy thử Medium reasoning để kiểm tra hoặc chạy lại.",
           });
         }
 
@@ -304,7 +376,7 @@ export async function POST(request: NextRequest) {
           ...state,
           percent: Math.max(15, state.percent || 0),
           phase: "Codex đang khởi động / reasoning…",
-          detail: `Process còn sống • ${elapsedLabel} • chưa phát event JSON${stderrSize ? ` • stderr ${stderrSize} bytes` : ""}`,
+          detail: `Vercel command ${commandId} đang chạy • ${elapsedLabel} • chưa phát event JSON${stderrSize ? ` • stderr ${stderrSize} bytes` : ""}`,
           finished: false,
           running: true,
           exitCode: null,
@@ -312,64 +384,66 @@ export async function POST(request: NextRequest) {
           silentSeconds,
           eventSize,
           heartbeat: true,
+          commandId,
         });
       }
 
-      if (!finished && !running) {
-        const stderrTail = await shell(
-          sandbox,
-          `tail -n 120 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
-        );
-        const runnerTail = await shell(
-          sandbox,
-          `tail -n 120 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
-        );
-        const commandIdResult = await shell(
-          sandbox,
-          `cat ${JSON.stringify(dir + "/.vibaocode-codex-command.txt")} 2>/dev/null || true`,
-        );
-        const failureText =
-          (stderrTail.stdout || runnerTail.stdout ||
-            `Codex process đã dừng nhưng không ghi exit code. Command ${commandIdResult.stdout.trim() || "unknown"} có thể đã bị kết thúc khi Sandbox session dừng/timeout.`).trim();
+      // No running command and no exit code. This is only an abnormal state if
+      // we actually had a command id. Surface the command lookup error so the
+      // next diagnosis is actionable instead of guessing from Linux PIDs.
+      const stderrTail = await shell(
+        sandbox,
+        `tail -n 160 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
+      );
+      const runnerTail = await shell(
+        sandbox,
+        `tail -n 160 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
+      );
+      const failureText =
+        stderrTail.stdout.trim() ||
+        runnerTail.stdout.trim() ||
+        commandLookupError ||
+        (commandId
+          ? `Không đọc được trạng thái Vercel command ${commandId}.`
+          : "Không tìm thấy command id của Codex.");
 
-        await writeProgress(sandbox, progressPath, {
-          percent: 0,
-          phase: "Codex dừng bất thường",
-          detail: failureText.slice(-1200),
-        });
+      await writeProgress(sandbox, progressPath, {
+        percent: 0,
+        phase: "Không đọc được trạng thái Codex",
+        detail: failureText.slice(-1200),
+      });
 
-        return NextResponse.json({
-          percent: 0,
-          phase: "Codex dừng bất thường",
-          detail: failureText.slice(-1200),
-          finished: true,
-          running: false,
-          exitCode: null,
-          elapsedSeconds,
-          error: failureText.slice(-4000),
-        });
-      }
-
-      if (finished && state.percent < 70) {
-        await writeProgress(sandbox, progressPath, {
-          percent: 70,
-          phase: "Codex đã sửa xong • đang chuẩn bị kết quả…",
-        });
-      }
-
-      const latest = await readProgress(sandbox, progressPath);
       return NextResponse.json({
-        ...latest,
-        finished,
+        percent: 0,
+        phase: "Không đọc được trạng thái Codex",
+        detail: failureText.slice(-1200),
+        finished: true,
         running: false,
-        exitCode: finished ? Number(exitCheck.stdout.trim() || "1") : null,
+        exitCode: null,
         elapsedSeconds,
-        silentSeconds,
-        eventSize,
+        commandId: commandId || null,
+        error: failureText.slice(-4000),
       });
     }
 
     if (action === "cancel") {
+      const commandIdResult = await shell(
+        sandbox,
+        `cat ${JSON.stringify(dir + "/.vibaocode-codex-command.txt")} 2>/dev/null || true`,
+      );
+      const commandId = commandIdResult.stdout.trim();
+
+      if (commandId) {
+        try {
+          const command = await sandbox.getCommand(commandId);
+          if (command.exitCode === null) {
+            await command.kill("SIGTERM");
+          }
+        } catch {
+          // Fall through to PID cleanup for older jobs.
+        }
+      }
+
       await shell(
         sandbox,
         `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
@@ -378,7 +452,7 @@ export async function POST(request: NextRequest) {
         percent: 0,
         phase: "Agent đã được dừng",
       });
-      return NextResponse.json({ cancelled: true });
+      return NextResponse.json({ cancelled: true, commandId: commandId || null });
     }
 
     if (action === "result") {
@@ -630,7 +704,7 @@ export async function POST(request: NextRequest) {
     const innerCommand = [
       "set +e",
       `cd ${JSON.stringify(ensuredDir)} || exit 97`,
-      `echo $ > ${JSON.stringify(actualPidPath)}`,
+      `printf "%s" "$BASHPID" > ${JSON.stringify(actualPidPath)}`,
       `trap 'CODE=$?; printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}' EXIT`,
       `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
       "CODE=$?",
@@ -670,39 +744,20 @@ export async function POST(request: NextRequest) {
       },
     ]);
 
-    // Give the runner a short moment to create its PID/exit markers. This
-    // catches launch failures immediately instead of making the UI wait for the
-    // next status poll with only "dừng bất thường".
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    const launchProbe = await shell(
-      sandbox,
-      [
-        `PID="$(cat ${JSON.stringify(actualPidPath)} 2>/dev/null || true)"`,
-        `EXIT="$(cat ${JSON.stringify(actualExitPath)} 2>/dev/null || true)"`,
-        `if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then STATE=running; elif [ -n "$EXIT" ]; then STATE=finished; else STATE=missing; fi`,
-        `printf '%s|%s|%s' "$STATE" "$PID" "$EXIT"`,
-      ].join("; "),
-    );
-
-    const [launchState, launchPid, launchExit] = launchProbe.stdout.trim().split("|");
-
-    if (launchState === "missing") {
-      const stderrTail = await shell(
-        sandbox,
-        `tail -n 160 ${JSON.stringify(actualStderrPath)} 2>/dev/null || true`,
-      );
-      throw new Error(
-        `Codex detached command không khởi động được trong Sandbox. command=${detachedCommand.cmdId}\n${stderrTail.stdout.slice(-3000)}`,
-      );
-    }
+    // Vercel returning a detached Command with a command id is the launch
+    // acknowledgement. Do not infer launch failure from a Linux PID marker:
+    // the command API is the authoritative process state across requests.
+    const initialCommand = await sandbox.getCommand(detachedCommand.cmdId);
+    const initialExitCode =
+      typeof initialCommand.exitCode === "number" ? initialCommand.exitCode : null;
 
     return NextResponse.json(
       {
         started: true,
-        running: launchState === "running",
-        finished: launchState === "finished",
-        launchPid: launchPid || null,
-        launchExitCode: launchExit ? Number(launchExit) : null,
+        running: initialExitCode === null,
+        finished: initialExitCode !== null,
+        launchPid: null,
+        launchExitCode: initialExitCode,
         commandId: detachedCommand.cmdId,
         model: requestedModel || "Codex default",
         reasoning: requestedReasoning || "default",
