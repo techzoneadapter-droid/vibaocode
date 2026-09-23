@@ -312,6 +312,8 @@ export default function Workspace() {
   const [playStep, setPlayStep] = useState(0);
   const [playReport, setPlayReport] = useState("");
   const [visualReview, setVisualReview] = useState("");
+  const [visualLoopLoading, setVisualLoopLoading] = useState(false);
+  const [visualLoopStage, setVisualLoopStage] = useState("");
   const [previewView, setPreviewView] = useState<"live" | "replay">("live");
   const [autoSync, setAutoSync] = useState(true);
   const [codexStatus, setCodexStatus] = useState<"disconnected" | "waiting" | "connected">("disconnected");
@@ -1227,6 +1229,297 @@ export default function Workspace() {
     }
   }
 
+  async function runCodexRepairPrompt(promptText: string) {
+    const activeReferences = referenceImages.filter((item) => item.active);
+
+    const startResponse = await fetch("/api/agent/codex-edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "run",
+        workspaceId,
+        repo,
+        branch,
+        githubToken,
+        prompt: promptText,
+        codexModel,
+        codexReasoning,
+        referenceImages: activeReferences.map((item) => ({
+          path: item.path,
+          name: item.name,
+          kind: item.kind,
+          note: item.note,
+        })),
+      }),
+    });
+    const startData = await startResponse.json();
+    if (!startResponse.ok) {
+      throw new Error(startData.error || "Không khởi động được Codex repair Agent.");
+    }
+
+    setAiProgress(Math.max(15, Number(startData.progress?.percent || 15)));
+    setAiProgressLabel(startData.progress?.phase || "Codex đang sửa theo Visual Director…");
+    setAiProgressDetail(startData.progress?.detail || "");
+
+    let finished = false;
+    let consecutivePollErrors = 0;
+
+    for (let i = 0; i < 900; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      try {
+        const statusResponse = await fetch("/api/agent/codex-edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "status",
+            workspaceId,
+            repo,
+            branch,
+          }),
+        });
+        const state = await statusResponse.json();
+        if (!statusResponse.ok) {
+          consecutivePollErrors += 1;
+          if (consecutivePollErrors >= 8) {
+            throw new Error(state.error || "Mất kết nối trạng thái Codex.");
+          }
+          continue;
+        }
+
+        consecutivePollErrors = 0;
+        if (typeof state.percent === "number") setAiProgress(state.percent);
+        if (state.phase) setAiProgressLabel(state.phase);
+        setAiProgressDetail(state.detail || "");
+        if (typeof state.elapsedSeconds === "number") {
+          setAiElapsedSeconds(state.elapsedSeconds);
+        }
+        if (state.error) throw new Error(state.error);
+
+        if (state.finished) {
+          finished = true;
+          break;
+        }
+      } catch (pollError) {
+        consecutivePollErrors += 1;
+        if (consecutivePollErrors >= 8) throw pollError;
+      }
+    }
+
+    if (!finished) {
+      throw new Error("Codex repair vẫn chạy sau 30 phút.");
+    }
+
+    const resultResponse = await fetch("/api/agent/codex-edit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "result",
+        workspaceId,
+        repo,
+        branch,
+        githubToken,
+        codexModel,
+        codexReasoning,
+      }),
+    });
+    const data = await resultResponse.json();
+    if (!resultResponse.ok) {
+      throw new Error(data.error || "Không lấy được kết quả Visual Repair.");
+    }
+
+    setProjectProposals(data.files || []);
+    setProjectSummary(data.summary || "");
+    setProjectPlan(data.plan || "");
+    if (data.usage) setAiRunUsage(data.usage);
+
+    if (data.previewUrl) {
+      setPreviewUrl(data.previewUrl);
+      setPreviewMode("url");
+      setPreviewKey((value) => value + 1);
+      setSandboxRunning(Boolean(data.serverRunning ?? true));
+    }
+
+    if (data.checks) {
+      const lines = (data.checks.checks || []).map(
+        (check: any) =>
+          `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-1800)}`,
+      );
+      if (data.checks.smokeStatus) {
+        lines.push(`HTTP smoke: ${data.checks.smokeStatus}`);
+      }
+      setTestSummary(lines.join("\n\n"));
+    }
+
+    return data;
+  }
+
+  async function requestVisualAudit() {
+    const activeReferences = referenceImages.filter((item) => item.active);
+    const response = await fetch("/api/agent/visual-audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        workspaceId,
+        repo,
+        branch,
+        githubToken,
+        codexModel,
+        codexReasoning,
+        referenceImages: activeReferences.map((item) => ({
+          path: item.path,
+          name: item.name,
+          kind: item.kind,
+          note: item.note,
+        })),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || data.detail || "Visual Director audit thất bại.");
+    }
+    return data;
+  }
+
+  async function visualLoopProject() {
+    if (!workspaceId || !treeItems.length) {
+      setError("Hãy Load repository trước.");
+      return;
+    }
+    if (codexStatus !== "connected") {
+      setError("Hãy kết nối ChatGPT/Codex trước khi chạy Visual Loop.");
+      return;
+    }
+
+    setVisualLoopLoading(true);
+    setAiLoading(true);
+    setError("");
+    setVisualReview("");
+    setPlayScreenshots([]);
+    setPlayReport("");
+    setWorkspaceView("preview");
+    setPreviewView("replay");
+    setAiProgress(5);
+    setAiProgressLabel("Visual Director đang chụp các màn…");
+    setAiProgressDetail("");
+    setNotice("Visual Loop: chụp app → so reference → sửa → chụp lại…");
+
+    try {
+      setVisualLoopStage("Audit vòng 1");
+      const before = await requestVisualAudit();
+
+      if (before.previewUrl) {
+        setPreviewUrl(before.previewUrl);
+        setSandboxRunning(true);
+      }
+      const beforeShots = Array.isArray(before.screenshots)
+        ? before.screenshots.map((item: any) => item.image).filter(Boolean)
+        : [];
+      if (beforeShots.length) {
+        setPlayScreenshots(beforeShots);
+        setPlayStep(0);
+      }
+
+      setVisualReview(`VISUAL DIRECTOR • VÒNG 1\n\n${before.report || ""}`);
+
+      const runtimeErrors = [
+        ...(before.runtime?.consoleErrors || []),
+        ...(before.runtime?.pageErrors || []),
+      ];
+
+      if (before.verdict === "PASS" && runtimeErrors.length === 0) {
+        setAiProgress(100);
+        setAiProgressLabel("Visual QA PASS");
+        setNotice("Visual Director: PASS • chưa cần sửa thêm");
+        return;
+      }
+
+      setVisualLoopStage("Codex đang sửa");
+      setAiProgress(15);
+      setAiProgressLabel("Đang gửi audit cho Codex sửa…");
+
+      const repairPrompt = [
+        before.fixPrompt || before.report || "",
+        "",
+        "ADDITIONAL VIBAOCODE LOOP RULES:",
+        "- Work directly in the current repository.",
+        "- Preserve all existing gameplay, save data and progression.",
+        "- Fix visual/layout/runtime issues from the audit, not unrelated features.",
+        "- Reuse the attached reference images according to their category/note.",
+        "- Run build/typecheck after editing.",
+        "- Do not commit or push.",
+      ].join("\n");
+
+      await runCodexRepairPrompt(repairPrompt);
+
+      setVisualLoopStage("Audit vòng 2");
+      setAiProgress(90);
+      setAiProgressLabel("Visual Director đang chụp lại sau khi sửa…");
+      setAiProgressDetail("");
+
+      const after = await requestVisualAudit();
+      const afterShots = Array.isArray(after.screenshots)
+        ? after.screenshots.map((item: any) => item.image).filter(Boolean)
+        : [];
+      if (afterShots.length) {
+        setPlayScreenshots(afterShots);
+        setPlayStep(0);
+      }
+
+      setVisualReview(
+        [
+          "VISUAL DIRECTOR • TRƯỚC KHI SỬA",
+          before.report || "",
+          "",
+          "================================================",
+          "",
+          "VISUAL DIRECTOR • SAU KHI SỬA",
+          after.report || "",
+        ].join("\n"),
+      );
+
+      const afterRuntimeErrors = [
+        ...(after.runtime?.consoleErrors || []),
+        ...(after.runtime?.pageErrors || []),
+      ];
+
+      setAiProgress(100);
+      setAiElapsedSeconds(0);
+      setAiProgressLabel(
+        after.verdict === "PASS" && afterRuntimeErrors.length === 0
+          ? "Visual Loop PASS"
+          : "Visual Loop xong • còn điểm cần polish",
+      );
+      setAiProgressDetail(
+        after.verdict === "PASS"
+          ? "Screenshot vòng 2 đạt"
+          : "Visual Director vẫn đề xuất thêm một vòng sửa",
+      );
+      setNotice(
+        after.verdict === "PASS" && afterRuntimeErrors.length === 0
+          ? "Visual Loop hoàn tất • PASS"
+          : "Visual Loop hoàn tất • xem báo cáo vòng 2",
+      );
+
+      if (after.previewUrl) {
+        setPreviewUrl(after.previewUrl);
+        setPreviewMode("url");
+        setPreviewKey((value) => value + 1);
+      }
+
+      void loadCodexUsage(false);
+    } catch (err) {
+      setAiProgress(0);
+      setAiProgressLabel("Visual Loop gặp lỗi");
+      setAiProgressDetail("");
+      setError(err instanceof Error ? err.message : "Visual Loop failed.");
+      setNotice("Visual Loop gặp lỗi");
+    } finally {
+      setVisualLoopLoading(false);
+      setAiLoading(false);
+      setVisualLoopStage("");
+    }
+  }
+
   async function askProjectAI() {
     if (!aiReady || aiScope !== "project") return;
     setAiLoading(true);
@@ -1993,7 +2286,7 @@ export default function Workspace() {
                 {(playReport || visualReview) ? (
                   <div className="playtest-result wide">
                     <strong>AI Play Test</strong>
-                    {visualReview ? <p>{visualReview}</p> : null}
+                    {visualReview ? <pre className="visual-review-pre">{visualReview}</pre> : null}
                     {playReport ? <pre>{playReport}</pre> : null}
                   </div>
                 ) : null}
@@ -2480,13 +2773,29 @@ export default function Workspace() {
                   <button onClick={testCloudProject} disabled={!treeItems.length || testLoading} type="button">
                     <Check size={14} /> Auto test
                   </button>
-                  <button onClick={playTestProject} disabled={!treeItems.length || playTestLoading} type="button">
+                  <button onClick={playTestProject} disabled={!treeItems.length || playTestLoading || visualLoopLoading} type="button">
                     <Bot size={14} /> AI play
+                  </button>
+                  <button
+                    className="visual-loop-action"
+                    onClick={visualLoopProject}
+                    disabled={!treeItems.length || visualLoopLoading || aiLoading || codexStatus !== "connected"}
+                    type="button"
+                  >
+                    {visualLoopLoading ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
+                    {visualLoopLoading ? (visualLoopStage || "Visual Loop…") : "Visual Loop"}
                   </button>
                   <button onClick={() => setWorkspaceView("changes")} type="button">
                     <Eye size={14} /> Review
                   </button>
                 </div>
+                {visualLoopLoading ? (
+                  <div className="visual-loop-mini-status">
+                    <span className="live-dot" />
+                    <strong>{visualLoopStage || "Visual Loop"}</strong>
+                    <span>Screenshot → Vision audit → Codex repair → screenshot lại</span>
+                  </div>
+                ) : null}
               </div>
 
               {sandboxRunning && (runLogs || testSummary) ? (
