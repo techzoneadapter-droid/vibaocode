@@ -77,6 +77,7 @@ export async function POST(request: NextRequest) {
     const workspaceId = String(body.workspaceId || "").trim();
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
+    const githubToken = String(body.githubToken || "").trim();
     const apiKey =
       String(body.apiKey || "").trim() || process.env.OPENAI_API_KEY || "";
 
@@ -88,7 +89,7 @@ export async function POST(request: NextRequest) {
     }
 
     const sandbox = await getWorkspaceSandbox(workspaceId);
-    const dir = await ensurePublicRepo(sandbox, repo, branch);
+    const dir = await ensurePublicRepo(sandbox, repo, branch, githubToken);
     await installDependencies(sandbox, dir);
     const server = await startDevServer(sandbox, dir);
 
