@@ -149,6 +149,17 @@ export async function POST(request: NextRequest) {
     const action = String(body.action || "run");
     const requestedModel = String(body.codexModel || "").trim();
     const requestedReasoning = String(body.codexReasoning || "").trim().toLowerCase();
+    const referenceImages = (Array.isArray(body.referenceImages) ? body.referenceImages : [])
+      .map((item: any) => ({
+        path: String(item?.path || "").trim(),
+        name: String(item?.name || "reference image").trim().slice(0, 140),
+        kind: String(item?.kind || "style").trim().slice(0, 32),
+        note: String(item?.note || "").trim().slice(0, 500),
+      }))
+      .filter((item: any) =>
+        /^\.vibaocode-references\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(item.path)
+      )
+      .slice(0, 5);
 
     if (
       requestedModel &&
@@ -640,6 +651,20 @@ export async function POST(request: NextRequest) {
         ? `--config ${JSON.stringify(`model_reasoning_effort="${requestedReasoning}"`)}`
         : "",
     ].filter(Boolean).join(" ");
+    const imageArgs = referenceImages
+      .map((item: any) => `--image ${JSON.stringify(`${ensuredDir}/${item.path}`)}`)
+      .join(" ");
+    const referenceContext = referenceImages.length
+      ? [
+          "",
+          "REFERENCE IMAGES ATTACHED TO THIS TURN:",
+          ...referenceImages.map(
+            (item: any, index: number) =>
+              `${index + 1}. ${item.name} • type=${item.kind} • local_path=${item.path}${item.note ? ` • note=${item.note}` : ""}`,
+          ),
+          "Use these images as visual/context references. Inspect them before making visual decisions.",
+        ]
+      : [];
 
     await writeProgress(sandbox, progressPath, {
       percent: 8,
@@ -687,6 +712,8 @@ export async function POST(request: NextRequest) {
             "After editing, inspect your changes and leave the working tree ready for review.",
             "Prefer maintainable, mobile-friendly changes.",
             "",
+            ...referenceContext,
+            "",
             "USER REQUEST:",
             prompt,
           ].join("\n"),
@@ -706,7 +733,7 @@ export async function POST(request: NextRequest) {
       `cd ${JSON.stringify(ensuredDir)} || exit 97`,
       `printf "%s" "$BASHPID" > ${JSON.stringify(actualPidPath)}`,
       `trap 'CODE=$?; printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}' EXIT`,
-      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
+      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} ${imageArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
       "CODE=$?",
       `printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}`,
       "exit $CODE",
@@ -761,6 +788,7 @@ export async function POST(request: NextRequest) {
         commandId: detachedCommand.cmdId,
         model: requestedModel || "Codex default",
         reasoning: requestedReasoning || "default",
+        referenceImages: referenceImages.length,
         version: codex.version,
         sessionBudget,
         progress: await readProgress(sandbox, progressPath),
