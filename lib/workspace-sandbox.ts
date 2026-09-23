@@ -350,6 +350,45 @@ export async function pushWorkspaceHead(
   if (!token) throw new Error("Thiếu GitHub token để push.");
 
   const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+
+  // Push Sandbox should preserve the CURRENT source tree, not only the last local commit.
+  // Stage a conservative whitelist of legitimate project files and auto-create a checkpoint
+  // when Codex/AI stopped before committing (e.g. quota exhausted). Runtime .vibaocode-* files
+  // and generated junk are intentionally excluded.
+  const statusBefore = await shell(sandbox, `cd ${JSON.stringify(dir)} && git status --porcelain`);
+  let autoCommitted = false;
+  let autoCommitSha = "";
+  if (statusBefore.stdout.trim()) {
+    const stage = await shell(
+      sandbox,
+      [
+        `cd ${JSON.stringify(dir)}`,
+        "git add -A -- src public index.html package.json package-lock.json tsconfig.json vite.config.ts README.md PROJECT.md .gitignore 2>/dev/null || true",
+        "git reset -- .vibaocode-* .vibaocode-references 2>/dev/null || true",
+      ].join(" && "),
+    );
+    if (stage.exitCode !== 0) {
+      throw new Error(`Không stage được source changes trước khi push.\n${(stage.stderr || stage.stdout || "").slice(-1800)}`);
+    }
+
+    const staged = await shell(sandbox, `cd ${JSON.stringify(dir)} && git diff --cached --name-only`);
+    if (staged.stdout.trim()) {
+      const commit = await shell(
+        sandbox,
+        [
+          `cd ${JSON.stringify(dir)}`,
+          `git -c user.name=${JSON.stringify("Vibaocode")} -c user.email=${JSON.stringify("vibaocode@local")} commit -m ${JSON.stringify("checkpoint: preserve current Sandbox changes")}`,
+        ].join(" && "),
+      );
+      if (commit.exitCode !== 0) {
+        throw new Error(`Không commit được source changes trước khi push.\n${(commit.stderr || commit.stdout || "").slice(-1800)}`);
+      }
+      autoCommitted = true;
+      const committed = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+      autoCommitSha = committed.stdout.trim();
+    }
+  }
+
   const current = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
   const originalLocalSha = current.stdout.trim();
   if (!originalLocalSha) throw new Error("Không đọc được local HEAD trong Sandbox.");
@@ -380,6 +419,8 @@ export async function pushWorkspaceHead(
       reconciled: false,
       stashed: false,
       stashRestored: true,
+      autoCommitted,
+      autoCommitSha: autoCommitSha || null,
       output: "Remote đã trùng local HEAD.",
     };
   }
@@ -541,6 +582,8 @@ export async function pushWorkspaceHead(
     stashed,
     stashRestored,
     stashRef: stashRestored ? null : (stashRef || null),
+    autoCommitted,
+    autoCommitSha: autoCommitSha || null,
     output: push.stdout.trim(),
   };
 }
