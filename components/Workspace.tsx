@@ -1233,8 +1233,19 @@ export default function Workspace() {
     }
   }
 
-  async function runCodexRepairPrompt(promptText: string) {
-    const activeReferences = referenceImages.filter((item) => item.active);
+  async function runCodexRepairPrompt(
+    promptText: string,
+    extraReferences: Array<{ path: string; name: string; kind: string; note: string }> = [],
+  ) {
+    const activeReferences = [
+      ...referenceImages.filter((item) => item.active).map((item) => ({
+        path: item.path,
+        name: item.name,
+        kind: item.kind,
+        note: item.note,
+      })),
+      ...extraReferences,
+    ].slice(0, 12);
 
     const startResponse = await fetch("/api/agent/codex-edit", {
       method: "POST",
@@ -1453,7 +1464,10 @@ export default function Workspace() {
         "- Do not commit or push.",
       ].join("\n");
 
-      await runCodexRepairPrompt(repairPrompt);
+      await runCodexRepairPrompt(
+        repairPrompt,
+        Array.isArray(before.runtimeReferences) ? before.runtimeReferences : [],
+      );
 
       setVisualLoopStage("Audit vòng 2");
       setAiProgress(90);
