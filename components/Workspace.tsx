@@ -1145,6 +1145,7 @@ export default function Workspace() {
                 workspaceId,
                 repo,
                 branch,
+                githubToken,
                 prompt,
                 codexModel,
                 codexReasoning,
