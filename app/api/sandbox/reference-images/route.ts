@@ -127,7 +127,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Không tìm thấy ảnh." }, { status: 404 });
     }
 
-    return new NextResponse(buffer, {
+    return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "content-type": contentTypeFor(path),
