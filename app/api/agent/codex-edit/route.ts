@@ -144,6 +144,7 @@ export async function POST(request: NextRequest) {
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
     const prompt = String(body.prompt || "").trim();
+    const githubToken = String(body.githubToken || "").trim();
     const action = String(body.action || "run");
     const requestedModel = String(body.codexModel || "").trim();
     const requestedReasoning = String(body.codexReasoning || "").trim().toLowerCase();
@@ -186,7 +187,7 @@ export async function POST(request: NextRequest) {
       phase: "Đang chuẩn bị Cloud Workspace…",
     });
 
-    const ensuredDir = await ensurePublicRepo(sandbox, repo, branch);
+    const ensuredDir = await ensurePublicRepo(sandbox, repo, branch, githubToken);
     const codex = await ensureCodexCli(sandbox);
     await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
     const codexCommand =
