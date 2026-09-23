@@ -350,6 +350,84 @@ export async function pushWorkspaceHead(
   if (!token) throw new Error("Thiếu GitHub token để push.");
 
   const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  const current = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+  const originalLocalSha = current.stdout.trim();
+  if (!originalLocalSha) throw new Error("Không đọc được local HEAD trong Sandbox.");
+
+  // Refresh only the remote tracking ref. Never hard-reset the user's local commit.
+  const fetch = await shell(
+    sandbox,
+    [
+      `cd ${JSON.stringify(dir)}`,
+      `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=100`,
+    ].join(" && "),
+  );
+  if (fetch.exitCode !== 0) {
+    throw new Error(`Không fetch được remote trước khi push.\n${(fetch.stderr || fetch.stdout || "").slice(-1800)}`);
+  }
+
+  const remoteBefore = await shell(
+    sandbox,
+    `cd ${JSON.stringify(dir)} && git rev-parse origin/${JSON.stringify(branch)}`,
+  );
+  const remoteBeforeSha = remoteBefore.stdout.trim();
+
+  if (remoteBeforeSha === originalLocalSha) {
+    return {
+      localSha: originalLocalSha,
+      remoteSha: remoteBeforeSha,
+      verified: true,
+      reconciled: false,
+      output: "Remote đã trùng local HEAD.",
+    };
+  }
+
+  const ancestry = await shell(
+    sandbox,
+    `cd ${JSON.stringify(dir)} && git merge-base --is-ancestor origin/${JSON.stringify(branch)} HEAD`,
+  );
+
+  let reconciled = false;
+  let rescueBranch = "";
+
+  if (ancestry.exitCode !== 0) {
+    // Protect the exact local commit before attempting any history reconciliation.
+    rescueBranch = `vibaocode-rescue-${originalLocalSha.slice(0, 12)}`;
+    const rescue = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git branch -f ${JSON.stringify(rescueBranch)} ${JSON.stringify(originalLocalSha)}`,
+    );
+    if (rescue.exitCode !== 0) {
+      throw new Error(`Không tạo được rescue branch trước khi đồng bộ history.\n${(rescue.stderr || rescue.stdout || "").slice(-1600)}`);
+    }
+
+    const rebase = await shell(
+      sandbox,
+      [
+        `cd ${JSON.stringify(dir)}`,
+        `GIT_EDITOR=true git rebase origin/${JSON.stringify(branch)}`,
+      ].join(" && "),
+    );
+
+    if (rebase.exitCode !== 0) {
+      await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && git rebase --abort >/dev/null 2>&1 || true`,
+      );
+      throw new Error(
+        [
+          "Local commit và remote đã phân kỳ; tự động rebase bị conflict.",
+          `Code vẫn an toàn ở local commit ${originalLocalSha} và rescue branch ${rescueBranch}.`,
+          (rebase.stderr || rebase.stdout || "").slice(-1800),
+        ].join("\n"),
+      );
+    }
+    reconciled = true;
+  }
+
+  const localAfter = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+  const localSha = localAfter.stdout.trim();
+
   const push = await shell(
     sandbox,
     [
@@ -359,30 +437,41 @@ export async function pushWorkspaceHead(
   );
 
   if (push.exitCode !== 0) {
-    throw new Error(`GitHub push thất bại.\n${(push.stderr || push.stdout || "").slice(-1800)}`);
+    throw new Error(
+      [
+        "GitHub push thất bại sau khi đã fetch/reconcile.",
+        `Local HEAD vẫn an toàn: ${localSha || originalLocalSha}`,
+        rescueBranch ? `Rescue branch: ${rescueBranch}` : "",
+        (push.stderr || push.stdout || "").slice(-1800),
+      ].filter(Boolean).join("\n"),
+    );
   }
 
-  const fetch = await shell(
+  const verifyFetch = await shell(
     sandbox,
     [
       `cd ${JSON.stringify(dir)}`,
-      `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=1`,
+      `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=100`,
     ].join(" && "),
   );
-
-  if (fetch.exitCode !== 0) {
-    throw new Error(`Đã push nhưng không verify được remote.\n${(fetch.stderr || fetch.stdout || "").slice(-1800)}`);
+  if (verifyFetch.exitCode !== 0) {
+    throw new Error(`Đã push nhưng không verify được remote.\n${(verifyFetch.stderr || verifyFetch.stdout || "").slice(-1800)}`);
   }
 
-  const local = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
-  const remote = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse origin/${JSON.stringify(branch)}`);
-  const localSha = local.stdout.trim();
+  const remote = await shell(
+    sandbox,
+    `cd ${JSON.stringify(dir)} && git rev-parse origin/${JSON.stringify(branch)}`,
+  );
   const remoteSha = remote.stdout.trim();
 
   return {
+    originalLocalSha,
     localSha,
+    remoteBeforeSha,
     remoteSha,
     verified: Boolean(localSha && remoteSha && localSha === remoteSha),
+    reconciled,
+    rescueBranch: rescueBranch || null,
     output: push.stdout.trim(),
   };
 }
