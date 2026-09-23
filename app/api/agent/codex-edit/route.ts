@@ -186,27 +186,162 @@ export async function POST(request: NextRequest) {
       );
       const finished = Boolean(exitCheck.stdout.trim());
 
-      if (!finished) {
+      const pidCheck = await shell(
+        sandbox,
+        `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo running; fi`,
+      );
+      const running = pidCheck.stdout.includes("running");
+
+      const diagnostics = await shell(
+        sandbox,
+        [
+          `STARTED="$(cat ${JSON.stringify(dir + "/.vibaocode-codex-started.txt")} 2>/dev/null || true)"`,
+          `EVENT_SIZE="$(wc -c < ${JSON.stringify(eventsPath)} 2>/dev/null || echo 0)"`,
+          `EVENT_MTIME="$(stat -c %Y ${JSON.stringify(eventsPath)} 2>/dev/null || echo 0)"`,
+          `STDERR_SIZE="$(wc -c < ${JSON.stringify(stderrPath)} 2>/dev/null || echo 0)"`,
+          `printf '%s|%s|%s|%s' "$STARTED" "$EVENT_SIZE" "$EVENT_MTIME" "$STDERR_SIZE"`,
+        ].join("; "),
+      );
+      const [startedRaw, eventSizeRaw, eventMtimeRaw, stderrSizeRaw] =
+        diagnostics.stdout.trim().split("|");
+      const startedAtMs = Number(startedRaw || 0);
+      const eventSize = Number(eventSizeRaw || 0);
+      const eventMtimeMs = Number(eventMtimeRaw || 0) * 1000;
+      const stderrSize = Number(stderrSizeRaw || 0);
+      const elapsedSeconds =
+        startedAtMs > 0 ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)) : 0;
+      const silentSeconds =
+        eventMtimeMs > 0
+          ? Math.max(0, Math.floor((Date.now() - eventMtimeMs) / 1000))
+          : elapsedSeconds;
+
+      if (!finished && running && eventSize > 0) {
         const eventsNow = await shell(
           sandbox,
-          `tail -n 180 ${JSON.stringify(eventsPath)} 2>/dev/null || true`,
+          `tail -n 220 ${JSON.stringify(eventsPath)} 2>/dev/null || true`,
         );
+        const dynamic = progressFromEvents(eventsNow.stdout);
+        await writeProgress(sandbox, progressPath, dynamic);
+        const latest = await readProgress(sandbox, progressPath);
+        return NextResponse.json({
+          ...latest,
+          finished: false,
+          running: true,
+          exitCode: null,
+          elapsedSeconds,
+          silentSeconds,
+          eventSize,
+          heartbeat: true,
+        });
+      }
 
-        if (eventsNow.stdout.trim()) {
-          const dynamic = progressFromEvents(eventsNow.stdout);
-          await writeProgress(sandbox, progressPath, dynamic);
-          const latest = await readProgress(sandbox, progressPath);
-          const pidCheck = await shell(
+      if (!finished && running && eventSize === 0) {
+        const stderrTail = await shell(
+          sandbox,
+          `tail -n 100 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
+        );
+        const runnerTail = await shell(
+          sandbox,
+          `tail -n 100 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
+        );
+        const failureText = `${stderrTail.stdout}\n${runnerTail.stdout}`.trim();
+
+        if (failureText && /error|fatal|invalid|unknown option|not found|denied|failed|bwrap|bubblewrap/i.test(failureText)) {
+          await shell(
             sandbox,
-            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo running; fi`,
+            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
           );
+          await writeProgress(sandbox, progressPath, {
+            percent: 0,
+            phase: "Codex khởi động thất bại",
+            detail: failureText.slice(-1200),
+          });
           return NextResponse.json({
-            ...latest,
-            finished: false,
-            running: pidCheck.stdout.includes("running"),
+            percent: 0,
+            phase: "Codex khởi động thất bại",
+            detail: failureText.slice(-1200),
+            finished: true,
+            running: false,
             exitCode: null,
+            elapsedSeconds,
+            error: failureText.slice(-4000),
           });
         }
+
+        // JSON mode normally emits startup events quickly. If absolutely no event
+        // is produced for 8 minutes, the process is considered wedged and is
+        // stopped automatically so the user does not waste 15–30 minutes.
+        if (elapsedSeconds >= 480) {
+          await shell(
+            sandbox,
+            `PID="$(cat ${JSON.stringify(pidPath)} 2>/dev/null || true)"; if [ -n "$PID" ]; then kill "$PID" >/dev/null 2>&1 || true; fi`,
+          );
+          await writeProgress(sandbox, progressPath, {
+            percent: 0,
+            phase: "Codex bị treo khi khởi động",
+            detail: "Không có event nào sau 8 phút. Agent đã được tự động dừng.",
+          });
+          return NextResponse.json({
+            percent: 0,
+            phase: "Codex bị treo khi khởi động",
+            detail: "Không có event nào sau 8 phút. Agent đã được tự động dừng.",
+            finished: true,
+            running: false,
+            exitCode: null,
+            elapsedSeconds,
+            error:
+              "Codex không phát bất kỳ event nào trong 8 phút nên Vibaocode đã tự dừng process. Hãy chạy lại; nếu lặp lại, đổi Reasoning từ High xuống Medium để kiểm tra runtime.",
+          });
+        }
+
+        const elapsedLabel =
+          elapsedSeconds >= 60
+            ? `${Math.floor(elapsedSeconds / 60)} phút ${elapsedSeconds % 60} giây`
+            : `${elapsedSeconds} giây`;
+
+        return NextResponse.json({
+          ...state,
+          percent: Math.max(15, state.percent || 0),
+          phase: "Codex đang khởi động / reasoning…",
+          detail: `Process còn sống • ${elapsedLabel} • chưa phát event JSON${stderrSize ? ` • stderr ${stderrSize} bytes` : ""}`,
+          finished: false,
+          running: true,
+          exitCode: null,
+          elapsedSeconds,
+          silentSeconds,
+          eventSize,
+          heartbeat: true,
+        });
+      }
+
+      if (!finished && !running) {
+        const stderrTail = await shell(
+          sandbox,
+          `tail -n 120 ${JSON.stringify(stderrPath)} 2>/dev/null || true`,
+        );
+        const runnerTail = await shell(
+          sandbox,
+          `tail -n 120 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
+        );
+        const failureText =
+          (stderrTail.stdout || runnerTail.stdout || "Codex process đã dừng nhưng không ghi exit code.").trim();
+
+        await writeProgress(sandbox, progressPath, {
+          percent: 0,
+          phase: "Codex dừng bất thường",
+          detail: failureText.slice(-1200),
+        });
+
+        return NextResponse.json({
+          percent: 0,
+          phase: "Codex dừng bất thường",
+          detail: failureText.slice(-1200),
+          finished: true,
+          running: false,
+          exitCode: null,
+          elapsedSeconds,
+          error: failureText.slice(-4000),
+        });
       }
 
       if (finished && state.percent < 70) {
@@ -220,8 +355,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         ...latest,
         finished,
-        running: !finished,
+        running: false,
         exitCode: finished ? Number(exitCheck.stdout.trim() || "1") : null,
+        elapsedSeconds,
+        silentSeconds,
+        eventSize,
       });
     }
 
@@ -497,6 +635,7 @@ export async function POST(request: NextRequest) {
         `cd ${JSON.stringify(ensuredDir)}`,
         `OLD_PID="$(cat ${JSON.stringify(actualPidPath)} 2>/dev/null || true)"; if [ -n "$OLD_PID" ]; then kill "$OLD_PID" >/dev/null 2>&1 || true; fi`,
         `rm -f ${JSON.stringify(actualEventsPath)} ${JSON.stringify(actualStderrPath)} ${JSON.stringify(actualExitPath)} ${JSON.stringify(actualPidPath)}`,
+        `date +%s%3N > .vibaocode-codex-started.txt`,
         `nohup bash -lc ${JSON.stringify(innerCommand)} > .vibaocode-codex-runner.log 2>&1 < /dev/null &`,
         `echo $! > ${JSON.stringify(actualPidPath)}`,
       ].join(" && "),
