@@ -263,6 +263,34 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const visualDir = `${dir}/.vibaocode-visual/${runId}`;
+    await shell(sandbox, `mkdir -p ${JSON.stringify(visualDir)}`);
+    const runtimeReferences: Array<{
+      path: string;
+      name: string;
+      kind: string;
+      note: string;
+    }> = [];
+
+    for (const item of (Array.isArray(captureReport.shots) ? captureReport.shots : []).slice(0, 8)) {
+      const source = String(item?.path || "");
+      if (!source) continue;
+      const label = String(item?.label || "screen").replace(/[^A-Za-z0-9_-]/g, "-");
+      const file = `${label}.png`;
+      const target = `${visualDir}/${file}`;
+      const copy = await shell(
+        sandbox,
+        `cp ${JSON.stringify(source)} ${JSON.stringify(target)}`,
+      );
+      if (copy.exitCode !== 0) continue;
+      runtimeReferences.push({
+        path: `.vibaocode-visual/${runId}/${file}`,
+        name: `Current render • ${label}`,
+        kind: "current-render",
+        note: "Screenshot captured by Visual Director before repair. Fix visible problems in this rendered screen.",
+      });
+    }
+
     const codex = await ensureCodexCli(sandbox);
     await shell(sandbox, `mkdir -p ${JSON.stringify(codex.codexHome)}`);
     const codexCommand =
@@ -334,6 +362,9 @@ export async function POST(request: NextRequest) {
       "You are the Visual Director and QA reviewer for a mobile game/app.",
       "Analyze only. Do NOT edit any files in this audit pass.",
       "Compare the rendered screenshots against the attached reference images and inspect the copied repository only when needed to identify likely causes.",
+      "",
+      "IMAGE ORDER:",
+      `The first ${referenceImages.length} attached image(s) are the reference images listed below. The following ${shotPaths.length} image(s) are the current rendered screenshots in the rendered-screen order below.`,
       "",
       "REFERENCE IMAGE ROLES:",
       referenceContext,
@@ -428,6 +459,7 @@ export async function POST(request: NextRequest) {
         consoleErrors: captureReport.consoleErrors || [],
         pageErrors: captureReport.pageErrors || [],
       },
+      runtimeReferences,
       model: requestedModel || "Codex default",
       reasoning: auditReasoning,
     });
