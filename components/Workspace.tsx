@@ -296,6 +296,9 @@ export default function Workspace() {
   const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api">("openai-api");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [vercelCleanupToken, setVercelCleanupToken] = useState("");
+  const [sandboxCleanupLoading, setSandboxCleanupLoading] = useState(false);
+  const [sandboxCleanupResult, setSandboxCleanupResult] = useState("");
   const [previewUrl, setPreviewUrl] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
   const [sandboxRunning, setSandboxRunning] = useState(false);
@@ -460,6 +463,39 @@ export default function Workspace() {
     setSettingsOpen(false);
     setNotice("Đã lưu cài đặt cho phiên trình duyệt này");
   };
+
+  async function cleanupVercelSandbox() {
+    setSandboxCleanupLoading(true);
+    setSandboxCleanupResult("");
+    setError("");
+    try {
+      const response = await fetch("/api/sandbox/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: vercelCleanupToken }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || data.message || "Không dọn được Sandbox.");
+      }
+
+      setSandboxCleanupResult(
+        `Đã xóa ${data.deletedSandboxes || 0} Sandbox và ${data.deletedSnapshots || 0} Snapshot cũ.`
+      );
+      setVercelCleanupToken("");
+      setSandboxRunning(false);
+      setSandboxName("");
+      setPreviewUrl("");
+      setCodexStatus("disconnected");
+      setCodexDetail("");
+      setNotice("Đã dọn quota Sandbox. Bấm Run hoặc Kết nối ChatGPT lại.");
+    } catch (err) {
+      setSandboxCleanupResult("");
+      setError(err instanceof Error ? err.message : "Dọn Sandbox thất bại.");
+    } finally {
+      setSandboxCleanupLoading(false);
+    }
+  }
 
   const apiHeaders = () => {
     const headers: Record<string, string> = {};
@@ -3124,6 +3160,37 @@ export default function Workspace() {
                 Vercel / GitHub Pages URL
                 <input value={previewUrl} onChange={(e) => setPreviewUrl(e.target.value)} placeholder="https://…" />
               </label>
+            </div>
+
+            <div className="settings-group">
+              <div className="settings-title"><Trash2 size={17} /><strong>Dọn Vercel Sandbox</strong></div>
+              <p className="settings-hint">
+                Dùng khi Vercel báo lỗi 402 Snapshot Storage. Vibaocode chỉ xóa Sandbox có tên bắt đầu bằng
+                <strong> vibaocode-</strong> và Snapshot thuộc chính project hiện tại.
+              </p>
+              <label>
+                Vercel token tạm thời <span>(để trống trước; Vibaocode sẽ thử OIDC của deployment)</span>
+                <input
+                  type="password"
+                  value={vercelCleanupToken}
+                  onChange={(e) => setVercelCleanupToken(e.target.value)}
+                  placeholder="Chỉ cần nhập nếu nút dọn báo thiếu quyền"
+                  autoComplete="off"
+                />
+              </label>
+              <button
+                className="ghost-button"
+                onClick={cleanupVercelSandbox}
+                disabled={sandboxCleanupLoading}
+                type="button"
+              >
+                {sandboxCleanupLoading ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+                {sandboxCleanupLoading ? "Đang dọn…" : "Dọn Sandbox/Snapshot cũ"}
+              </button>
+              {sandboxCleanupResult ? <p className="settings-hint">{sandboxCleanupResult}</p> : null}
+              <p className="settings-hint">
+                Token nhập ở đây không được lưu vào sessionStorage/localStorage và được xóa khỏi ô sau khi dọn thành công.
+              </p>
             </div>
 
             <div className="security-callout">
