@@ -3,7 +3,6 @@ import {
   ensurePublicRepo,
   getWorkspaceSandbox,
   installDependencies,
-  projectWorkspaceId,
   repoDirectory,
   runProjectChecks,
   shell,
@@ -30,7 +29,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
+    const sandbox = await getWorkspaceSandbox(workspaceId);
     const dir = repoDirectory(repo, branch);
 
     if (action === "start") {
