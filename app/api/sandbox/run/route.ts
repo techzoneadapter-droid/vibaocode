@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
     const workspaceId = String(body.workspaceId || "").trim();
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
+    const githubToken = String(body.githubToken || "").trim();
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -33,7 +34,7 @@ export async function POST(request: NextRequest) {
     const dir = repoDirectory(repo, branch);
 
     if (action === "start") {
-      const ensuredDir = await ensurePublicRepo(sandbox, repo, branch);
+      const ensuredDir = await ensurePublicRepo(sandbox, repo, branch, githubToken);
       await installDependencies(sandbox, ensuredDir);
       const server = await startDevServer(sandbox, ensuredDir);
       const revision = await shell(
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: "Không có file để sync." }, { status: 400 });
       }
 
-      await ensurePublicRepo(sandbox, repo, branch);
+      await ensurePublicRepo(sandbox, repo, branch, githubToken);
       const writes = [];
       for (const item of files.slice(0, 20)) {
         const path = String(item?.path || "");
@@ -80,7 +81,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "restart") {
-      await ensurePublicRepo(sandbox, repo, branch);
+      await ensurePublicRepo(sandbox, repo, branch, githubToken);
       await installDependencies(sandbox, dir);
       const server = await startDevServer(sandbox, dir);
       return NextResponse.json({
@@ -92,7 +93,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === "test") {
-      await ensurePublicRepo(sandbox, repo, branch);
+      await ensurePublicRepo(sandbox, repo, branch, githubToken);
       await installDependencies(sandbox, dir);
       const server = await startDevServer(sandbox, dir);
       const result = await runProjectChecks(sandbox, dir);
