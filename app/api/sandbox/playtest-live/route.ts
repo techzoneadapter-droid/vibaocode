@@ -5,7 +5,6 @@ import {
   ensureBrowserTester,
   getWorkspaceSandbox,
   installDependencies,
-  projectWorkspaceId,
   shell,
   startDevServer,
   validBranch,
@@ -209,7 +208,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const sandbox = await getWorkspaceSandbox(projectWorkspaceId(workspaceId, repo, branch));
+    const sandbox = await getWorkspaceSandbox(workspaceId);
     const toolsDir = "/vercel/sandbox/.vibaocode-tools";
 
     if (action === "start") {
@@ -233,16 +232,27 @@ export async function POST(request: NextRequest) {
       ]);
       await shell(sandbox, `mkdir -p ${JSON.stringify(runDir)}`);
 
-      await shell(
-        sandbox,
-        `cd ${JSON.stringify(toolsDir)} && nohup node playtest-live.cjs ${JSON.stringify(server.previewUrl)} ${JSON.stringify(runDir)} > ${JSON.stringify(runDir + "/runner.log")} 2>&1 < /dev/null & echo $! > ${JSON.stringify(runDir + "/runner.pid")}`,
-      );
+      const command = await sandbox.runCommand({
+        cmd: "bash",
+        args: [
+          "-lc",
+          `cd ${JSON.stringify(toolsDir)} && node playtest-live.cjs ${JSON.stringify(server.previewUrl)} ${JSON.stringify(runDir)} > ${JSON.stringify(runDir + "/runner.log")} 2>&1`,
+        ],
+        detached: true,
+      });
+      await sandbox.writeFiles([
+        {
+          path: runDir + "/runner.command",
+          content: Buffer.from(command.cmdId, "utf8"),
+        },
+      ]);
 
       return NextResponse.json({
         runId: nextRunId,
         status: "starting",
         previewUrl: server.previewUrl,
         sandboxName: sandbox.name,
+        commandId: command.cmdId,
       });
     }
 
