@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
 
-const DEFAULT_TIMEOUT = 30 * 60 * 1000;
+const DEFAULT_TIMEOUT = 40 * 60 * 1000;
 const PORTS = [3000, 6080, 9222];
 
 export function safeWorkspaceId(value: string) {
@@ -35,6 +35,34 @@ export async function getWorkspaceSandbox(workspaceId: string) {
       ports: PORTS,
     });
   }
+}
+
+export async function reserveLongAgentSession(sandbox: Sandbox) {
+  // Persistent Sandboxes preserve files, not running processes. If the active
+  // session hits its timeout, a detached Codex process is terminated and the
+  // next status poll resumes a fresh VM with no process/exit code.
+  //
+  // Extend opportunistically without assuming the user's Vercel plan limit.
+  // Hobby historically allows shorter sessions than Pro/Enterprise, so try a
+  // large extension first and gracefully fall back to smaller increments.
+  const attempts = [30, 15, 5];
+
+  for (const minutes of attempts) {
+    try {
+      await sandbox.extendTimeout(minutes * 60 * 1000);
+      return {
+        extended: true,
+        minutes,
+      };
+    } catch {
+      // Try a smaller increment if this plan/session is already near its max.
+    }
+  }
+
+  return {
+    extended: false,
+    minutes: 0,
+  };
 }
 
 export async function run(
