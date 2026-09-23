@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
 
 const DEFAULT_TIMEOUT = 40 * 60 * 1000;
+const SNAPSHOT_EXPIRATION = 24 * 60 * 60 * 1000;
 const PORTS = [3000, 6080, 9222];
 
 export function safeWorkspaceId(value: string) {
@@ -31,6 +32,12 @@ export async function getWorkspaceSandbox(workspaceId: string) {
     return await Sandbox.create({
       name,
       persistent: true,
+      snapshotExpiration: SNAPSHOT_EXPIRATION,
+      keepLastSnapshots: {
+        count: 1,
+        expiration: SNAPSHOT_EXPIRATION,
+        deleteEvicted: true,
+      },
       timeout: DEFAULT_TIMEOUT,
       ports: PORTS,
     });
