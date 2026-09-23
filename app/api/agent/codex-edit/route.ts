@@ -157,9 +157,9 @@ export async function POST(request: NextRequest) {
         note: String(item?.note || "").trim().slice(0, 500),
       }))
       .filter((item: any) =>
-        /^\.vibaocode-references\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(item.path)
+        /^\.vibaocode-(?:references\/[A-Za-z0-9._-]+|visual\/[A-Za-z0-9_-]+\/[A-Za-z0-9._-]+)\.(?:png|jpe?g|webp)$/i.test(item.path)
       )
-      .slice(0, 5);
+      .slice(0, 12);
 
     if (
       requestedModel &&
