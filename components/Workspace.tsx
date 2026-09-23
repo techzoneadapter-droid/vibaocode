@@ -1085,23 +1085,57 @@ export default function Workspace() {
     setAiProgress(2);
     setAiProgressLabel("Đang chuẩn bị AI Agent…");
     setAiProgressDetail("");
-    setNotice("Project Agent đang tìm file liên quan…");
-
-    let progressTimer: number | undefined;
+    setNotice("Project Agent đang chuẩn bị workspace…");
 
     try {
       const useCodexAccount = aiProvider === "codex-account";
       const useExternalProvider = aiProvider === "claude-api" || aiProvider === "gemini-api";
-
-      if (useCodexAccount && !sandboxRunning) {
-        setAiProgress(4);
-        setAiProgressLabel("Đang khởi động Cloud Runtime…");
-        const started = await runCloudProject();
-        if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
-      }
+      let data: any;
 
       if (useCodexAccount) {
-        progressTimer = window.setInterval(async () => {
+        if (!sandboxRunning) {
+          setAiProgress(4);
+          setAiProgressLabel("Đang khởi động Cloud Runtime…");
+          const started = await runCloudProject();
+          if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
+        }
+
+        setAiProgress(6);
+        setAiProgressLabel("Đang gửi công việc cho Codex…");
+
+        const startResponse = await fetch("/api/agent/codex-edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "run",
+            workspaceId,
+            repo,
+            branch,
+            githubToken,
+            prompt,
+            codexModel,
+            codexReasoning,
+          }),
+        });
+        const startData = await startResponse.json();
+        if (!startResponse.ok) {
+          throw new Error(startData.error || "Không khởi động được Codex Agent.");
+        }
+
+        setAiProgress(Math.max(15, Number(startData.progress?.percent || 15)));
+        setAiProgressLabel(startData.progress?.phase || "Codex đang làm việc trong Cloud Sandbox…");
+        setAiProgressDetail(startData.progress?.detail || "");
+        setNotice("Codex đang chạy nền • có thể xử lý yêu cầu lớn trong nhiều phút");
+
+        let finished = false;
+        let consecutivePollErrors = 0;
+
+        // Codex runs as a background process inside the persistent Sandbox.
+        // The browser only polls lightweight status requests, so a long design/
+        // refactor task is no longer limited by Vercel's single-request timeout.
+        for (let i = 0; i < 900; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+
           try {
             const statusResponse = await fetch("/api/agent/codex-edit", {
               method: "POST",
@@ -1113,44 +1147,69 @@ export default function Workspace() {
                 branch,
               }),
             });
-            if (!statusResponse.ok) return;
+            if (!statusResponse.ok) {
+              consecutivePollErrors += 1;
+              if (consecutivePollErrors >= 8) {
+                throw new Error("Mất kết nối với trạng thái Codex quá lâu.");
+              }
+              continue;
+            }
+
+            consecutivePollErrors = 0;
             const state = await statusResponse.json();
             if (typeof state.percent === "number") setAiProgress(state.percent);
             if (state.phase) setAiProgressLabel(state.phase);
             setAiProgressDetail(state.detail || "");
-          } catch {
-            // The main Agent request keeps running even if a progress poll fails.
-          }
-        }, 1400);
-      }
 
-      const endpoint = useCodexAccount
-        ? "/api/agent/codex-edit"
-        : useExternalProvider
+            if (state.finished) {
+              finished = true;
+              break;
+            }
+          } catch (pollError) {
+            consecutivePollErrors += 1;
+            if (consecutivePollErrors >= 8) throw pollError;
+          }
+        }
+
+        if (!finished) {
+          throw new Error(
+            "Codex vẫn đang chạy sau 30 phút. Workspace được giữ nguyên; hãy thử lại hoặc chia tác vụ nếu cần.",
+          );
+        }
+
+        setAiProgress(72);
+        setAiProgressLabel("Codex đã xong • đang dựng preview và chạy test…");
+
+        const resultResponse = await fetch("/api/agent/codex-edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "result",
+            workspaceId,
+            repo,
+            branch,
+            githubToken,
+            codexModel,
+            codexReasoning,
+          }),
+        });
+        data = await resultResponse.json();
+        if (!resultResponse.ok) {
+          throw new Error(data.error || "Không lấy được kết quả Codex.");
+        }
+      } else {
+        const endpoint = useExternalProvider
           ? "/api/ai/provider-project"
           : "/api/ai/project";
 
-      if (!useCodexAccount) {
         setAiProgress(15);
         setAiProgressLabel("AI đang đọc ngữ cảnh dự án…");
-      }
 
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          useCodexAccount
-            ? {
-                action: "run",
-                workspaceId,
-                repo,
-                branch,
-                githubToken,
-                prompt,
-                codexModel,
-                codexReasoning,
-              }
-            : useExternalProvider
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            useExternalProvider
               ? {
                   provider: aiProvider === "claude-api" ? "anthropic" : "gemini",
                   apiKey: aiProvider === "claude-api" ? anthropicKey : geminiKey,
@@ -1169,10 +1228,11 @@ export default function Workspace() {
                   prompt,
                   projectContext,
                 }
-        ),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Project Agent không xử lý được yêu cầu.");
+          ),
+        });
+        data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Project Agent không xử lý được yêu cầu.");
+      }
 
       setAiProgress(96);
       setAiProgressLabel("Đang cập nhật preview và kết quả…");
@@ -1200,7 +1260,7 @@ export default function Workspace() {
       setAiProgress(100);
       setAiProgressLabel(data.checks?.passed === false ? "Hoàn tất • cần review test" : "Hoàn tất");
       setAiProgressDetail(`${data.files?.length || 0} file thay đổi`);
-      setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model}`);
+      setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model || "AI"}`);
 
       if (useCodexAccount) void loadCodexUsage(false);
     } catch (err) {
@@ -1210,7 +1270,6 @@ export default function Workspace() {
       setError(err instanceof Error ? err.message : "Project Agent failed.");
       setNotice("Project Agent gặp lỗi");
     } finally {
-      if (progressTimer) window.clearInterval(progressTimer);
       setAiLoading(false);
     }
   }
