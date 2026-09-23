@@ -308,6 +308,7 @@ export default function Workspace() {
   const [testSummary, setTestSummary] = useState("");
   const [runLoading, setRunLoading] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
+  const [sandboxPushLoading, setSandboxPushLoading] = useState(false);
   const [playTestLoading, setPlayTestLoading] = useState(false);
   const [playScreenshots, setPlayScreenshots] = useState<string[]>([]);
   const [liveTestImage, setLiveTestImage] = useState("");
@@ -678,6 +679,44 @@ export default function Workspace() {
       setNotice(`Đã sao chép mã thiết bị ${codexUserCode}`);
     } catch {
       setNotice(`Mã thiết bị: ${codexUserCode}`);
+    }
+  }
+
+  async function pushSandboxHead() {
+    if (!workspaceId || !repo || !branch) return;
+    if (!githubToken) {
+      setSettingsOpen(true);
+      setError("Thêm Fine-grained GitHub token trong Settings trước khi push Sandbox.");
+      return;
+    }
+
+    setSandboxPushLoading(true);
+    setError("");
+    setNotice("Đang push commit hiện tại trong Cloud Sandbox lên GitHub…");
+    try {
+      const response = await fetch("/api/agent/codex-edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "push",
+          workspaceId,
+          repo,
+          branch,
+          githubToken,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.verified) {
+        throw new Error(data.error || "Push Sandbox chưa verify được.");
+      }
+
+      setSandboxRevision(String(data.remoteSha || "").slice(0, 12));
+      setNotice(`Đã push & verify ${String(data.remoteSha || "").slice(0, 12)} lên ${branch}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không push được Cloud Sandbox.");
+      setNotice("Push Sandbox thất bại");
+    } finally {
+      setSandboxPushLoading(false);
     }
   }
 
@@ -2851,6 +2890,14 @@ export default function Workspace() {
                   </button>
                   <button onClick={() => setWorkspaceView("changes")} type="button">
                     <Eye size={14} /> Review
+                  </button>
+                  <button
+                    onClick={pushSandboxHead}
+                    disabled={!treeItems.length || sandboxPushLoading || !sandboxRunning}
+                    type="button"
+                  >
+                    {sandboxPushLoading ? <Loader2 className="spin" size={14} /> : <Upload size={14} />}
+                    {sandboxPushLoading ? "Pushing…" : "Push Sandbox"}
                   </button>
                 </div>
                 {visualLoopLoading ? (
