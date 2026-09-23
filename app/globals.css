@@ -2918,3 +2918,55 @@ button:disabled {
     height: 52px;
   }
 }
+
+
+/* Visual Director loop */
+.visual-loop-action {
+  border-color: rgba(121, 116, 255, 0.34) !important;
+  background: linear-gradient(180deg, rgba(79, 73, 176, 0.28), rgba(36, 32, 92, 0.28)) !important;
+  color: #c7c4ff !important;
+}
+
+.visual-loop-action:hover:not(:disabled) {
+  border-color: rgba(141, 137, 255, 0.58) !important;
+  background: linear-gradient(180deg, rgba(92, 86, 202, 0.38), rgba(44, 39, 112, 0.38)) !important;
+}
+
+.visual-loop-mini-status {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border: 1px solid rgba(117, 109, 238, 0.22);
+  border-radius: 8px;
+  background: rgba(45, 39, 103, 0.18);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 7px;
+  align-items: center;
+}
+
+.visual-loop-mini-status .live-dot {
+  grid-row: 1 / span 2;
+}
+
+.visual-loop-mini-status strong {
+  color: #d6d3ff;
+  font-size: 8px;
+}
+
+.visual-loop-mini-status span:last-child {
+  color: #7e8797;
+  font-size: 7px;
+  line-height: 1.35;
+}
+
+.visual-review-pre {
+  margin: 8px 0 0;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 8px;
+  line-height: 1.55;
+  color: #b7c5c9;
+}
