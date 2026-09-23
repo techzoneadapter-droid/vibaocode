@@ -378,6 +378,8 @@ export async function pushWorkspaceHead(
       remoteSha: remoteBeforeSha,
       verified: true,
       reconciled: false,
+      stashed: false,
+      stashRestored: true,
       output: "Remote đã trùng local HEAD.",
     };
   }
@@ -389,6 +391,25 @@ export async function pushWorkspaceHead(
 
   let reconciled = false;
   let rescueBranch = "";
+  let stashRef = "";
+  let stashed = false;
+  let stashRestored = true;
+
+  async function restoreStash() {
+    if (!stashed || !stashRef) return true;
+    const restore = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git stash apply --index ${JSON.stringify(stashRef)}`,
+    );
+    if (restore.exitCode !== 0) return false;
+
+    // Only drop our stash after a successful restore.
+    await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git stash drop ${JSON.stringify(stashRef)} >/dev/null 2>&1 || true`,
+    );
+    return true;
+  }
 
   if (ancestry.exitCode !== 0) {
     // Protect the exact local commit before attempting any history reconciliation.
@@ -399,6 +420,36 @@ export async function pushWorkspaceHead(
     );
     if (rescue.exitCode !== 0) {
       throw new Error(`Không tạo được rescue branch trước khi đồng bộ history.\n${(rescue.stderr || rescue.stdout || "").slice(-1600)}`);
+    }
+
+    // Vibaocode runtime/progress files can make the working tree dirty even when
+    // the user's source commit is already complete. Preserve every dirty file
+    // before rebasing, then restore it after the push. Nothing is discarded.
+    const dirty = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git status --porcelain`,
+    );
+    if (dirty.stdout.trim()) {
+      const stash = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && git stash push --include-untracked -m ${JSON.stringify(`vibaocode-pre-push-${originalLocalSha.slice(0, 12)}`)}`,
+      );
+      if (stash.exitCode !== 0) {
+        throw new Error(
+          [
+            "Không thể bảo toàn working tree trước khi rebase.",
+            `Code commit vẫn an toàn ở ${originalLocalSha} và rescue branch ${rescueBranch}.`,
+            (stash.stderr || stash.stdout || "").slice(-1600),
+          ].join("\n"),
+        );
+      }
+
+      const stashName = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && git stash list --format=%gd -1`,
+      );
+      stashRef = stashName.stdout.trim();
+      stashed = Boolean(stashRef);
     }
 
     const rebase = await shell(
@@ -414,12 +465,18 @@ export async function pushWorkspaceHead(
         sandbox,
         `cd ${JSON.stringify(dir)} && git rebase --abort >/dev/null 2>&1 || true`,
       );
+      stashRestored = await restoreStash();
       throw new Error(
         [
           "Local commit và remote đã phân kỳ; tự động rebase bị conflict.",
           `Code vẫn an toàn ở local commit ${originalLocalSha} và rescue branch ${rescueBranch}.`,
+          stashed
+            ? (stashRestored
+                ? "Các thay đổi chưa commit đã được khôi phục lại."
+                : `Các thay đổi chưa commit vẫn an toàn trong ${stashRef}; chưa khôi phục tự động được.`)
+            : "",
           (rebase.stderr || rebase.stdout || "").slice(-1800),
-        ].join("\n"),
+        ].filter(Boolean).join("\n"),
       );
     }
     reconciled = true;
@@ -437,11 +494,17 @@ export async function pushWorkspaceHead(
   );
 
   if (push.exitCode !== 0) {
+    stashRestored = await restoreStash();
     throw new Error(
       [
         "GitHub push thất bại sau khi đã fetch/reconcile.",
         `Local HEAD vẫn an toàn: ${localSha || originalLocalSha}`,
         rescueBranch ? `Rescue branch: ${rescueBranch}` : "",
+        stashed
+          ? (stashRestored
+              ? "Các thay đổi chưa commit đã được khôi phục lại."
+              : `Các thay đổi chưa commit vẫn an toàn trong ${stashRef}.`)
+          : "",
         (push.stderr || push.stdout || "").slice(-1800),
       ].filter(Boolean).join("\n"),
     );
@@ -455,6 +518,7 @@ export async function pushWorkspaceHead(
     ].join(" && "),
   );
   if (verifyFetch.exitCode !== 0) {
+    stashRestored = await restoreStash();
     throw new Error(`Đã push nhưng không verify được remote.\n${(verifyFetch.stderr || verifyFetch.stdout || "").slice(-1800)}`);
   }
 
@@ -464,6 +528,8 @@ export async function pushWorkspaceHead(
   );
   const remoteSha = remote.stdout.trim();
 
+  stashRestored = await restoreStash();
+
   return {
     originalLocalSha,
     localSha,
@@ -472,6 +538,9 @@ export async function pushWorkspaceHead(
     verified: Boolean(localSha && remoteSha && localSha === remoteSha),
     reconciled,
     rescueBranch: rescueBranch || null,
+    stashed,
+    stashRestored,
+    stashRef: stashRestored ? null : (stashRef || null),
     output: push.stdout.trim(),
   };
 }
