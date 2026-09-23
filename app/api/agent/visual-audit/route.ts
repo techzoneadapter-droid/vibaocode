@@ -280,18 +280,35 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const auditReasoning = ["high", "xhigh", "max"].includes(requestedReasoning)
+      ? "medium"
+      : requestedReasoning || "medium";
     const modelArgs = [
       requestedModel ? `--model ${JSON.stringify(requestedModel)}` : "",
-      requestedReasoning
-        ? `--config ${JSON.stringify(`model_reasoning_effort="${requestedReasoning}"`)}`
+      auditReasoning
+        ? `--config ${JSON.stringify(`model_reasoning_effort="${auditReasoning}"`)}`
         : "",
     ].filter(Boolean).join(" ");
 
     const auditCopy = `${toolsDir}/visual-audit/repo-${runId}`;
-    await shell(
+    const copyResult = await shell(
       sandbox,
-      `rm -rf ${JSON.stringify(auditCopy)} && cp -a ${JSON.stringify(dir)} ${JSON.stringify(auditCopy)}`,
+      [
+        `rm -rf ${JSON.stringify(auditCopy)}`,
+        `mkdir -p ${JSON.stringify(auditCopy)}`,
+        `cd ${JSON.stringify(dir)}`,
+        `tar --exclude=.git --exclude=node_modules --exclude=.vibaocode-references --exclude='dist' --exclude='.next' -cf - . | (cd ${JSON.stringify(auditCopy)} && tar -xf -)`,
+      ].join(" && "),
     );
+    if (copyResult.exitCode !== 0) {
+      return NextResponse.json(
+        {
+          error: "Không tạo được bản copy read-only cho Visual Director.",
+          detail: copyResult.stderr || copyResult.stdout,
+        },
+        { status: 500 },
+      );
+    }
 
     const imageArgs = [
       ...referenceImages.map((item: any) => `${dir}/${item.path}`),
@@ -412,7 +429,7 @@ export async function POST(request: NextRequest) {
         pageErrors: captureReport.pageErrors || [],
       },
       model: requestedModel || "Codex default",
-      reasoning: requestedReasoning || "medium",
+      reasoning: auditReasoning,
     });
   } catch (error) {
     return NextResponse.json(
