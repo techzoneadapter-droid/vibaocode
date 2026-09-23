@@ -340,6 +340,53 @@ export async function ensurePublicRepo(
   return dir;
 }
 
+export async function pushWorkspaceHead(
+  sandbox: Sandbox,
+  dir: string,
+  branch: string,
+  githubToken: string,
+) {
+  const token = githubToken.trim();
+  if (!token) throw new Error("Thiếu GitHub token để push.");
+
+  const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
+  const push = await shell(
+    sandbox,
+    [
+      `cd ${JSON.stringify(dir)}`,
+      `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} push origin HEAD:${JSON.stringify(branch)}`,
+    ].join(" && "),
+  );
+
+  if (push.exitCode !== 0) {
+    throw new Error(`GitHub push thất bại.\n${(push.stderr || push.stdout || "").slice(-1800)}`);
+  }
+
+  const fetch = await shell(
+    sandbox,
+    [
+      `cd ${JSON.stringify(dir)}`,
+      `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=1`,
+    ].join(" && "),
+  );
+
+  if (fetch.exitCode !== 0) {
+    throw new Error(`Đã push nhưng không verify được remote.\n${(fetch.stderr || fetch.stdout || "").slice(-1800)}`);
+  }
+
+  const local = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+  const remote = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse origin/${JSON.stringify(branch)}`);
+  const localSha = local.stdout.trim();
+  const remoteSha = remote.stdout.trim();
+
+  return {
+    localSha,
+    remoteSha,
+    verified: Boolean(localSha && remoteSha && localSha === remoteSha),
+    output: push.stdout.trim(),
+  };
+}
+
 export async function installDependencies(
   sandbox: Sandbox,
   dir: string,
