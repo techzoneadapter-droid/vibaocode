@@ -2596,3 +2596,63 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Codex Agent heartbeat + watchdog controls */
+.agent-heartbeat {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(79, 205, 163, 0.18);
+  border-radius: 8px;
+  background: rgba(18, 47, 40, 0.42);
+  color: #7d969d;
+  font-size: 7.5px;
+}
+
+.agent-heartbeat strong {
+  color: #b9ead8;
+  font-size: 7.5px;
+}
+
+.agent-heartbeat > span:last-child {
+  margin-left: auto;
+  color: #8fc9b5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 800;
+}
+
+.heartbeat-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #54d6a8;
+  box-shadow: 0 0 0 0 rgba(84, 214, 168, 0.5);
+  animation: heartbeatPulse 1.45s infinite;
+}
+
+@keyframes heartbeatPulse {
+  0% { box-shadow: 0 0 0 0 rgba(84, 214, 168, 0.42); opacity: 1; }
+  70% { box-shadow: 0 0 0 6px rgba(84, 214, 168, 0); opacity: 0.75; }
+  100% { box-shadow: 0 0 0 0 rgba(84, 214, 168, 0); opacity: 1; }
+}
+
+.agent-cancel-button {
+  width: 100%;
+  min-height: 30px;
+  margin-top: 8px;
+  border: 1px solid rgba(225, 112, 112, 0.24);
+  border-radius: 8px;
+  background: rgba(87, 31, 31, 0.34);
+  color: #e8a1a1;
+  font-size: 8px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.agent-cancel-button:hover {
+  border-color: rgba(225, 112, 112, 0.42);
+  background: rgba(105, 37, 37, 0.42);
+}
