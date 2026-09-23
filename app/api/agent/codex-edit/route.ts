@@ -5,6 +5,7 @@ import {
   getWorkspaceSandbox,
   installDependencies,
   repoDirectory,
+  reserveLongAgentSession,
   run,
   runProjectChecks,
   shell,
@@ -323,8 +324,13 @@ export async function POST(request: NextRequest) {
           sandbox,
           `tail -n 120 ${JSON.stringify(dir + "/.vibaocode-codex-runner.log")} 2>/dev/null || true`,
         );
+        const commandIdResult = await shell(
+          sandbox,
+          `cat ${JSON.stringify(dir + "/.vibaocode-codex-command.txt")} 2>/dev/null || true`,
+        );
         const failureText =
-          (stderrTail.stdout || runnerTail.stdout || "Codex process đã dừng nhưng không ghi exit code.").trim();
+          (stderrTail.stdout || runnerTail.stdout ||
+            `Codex process đã dừng nhưng không ghi exit code. Command ${commandIdResult.stdout.trim() || "unknown"} có thể đã bị kết thúc khi Sandbox session dừng/timeout.`).trim();
 
         await writeProgress(sandbox, progressPath, {
           percent: 0,
@@ -591,6 +597,7 @@ export async function POST(request: NextRequest) {
     const actualStderrPath = `${ensuredDir}/.vibaocode-codex-stderr.log`;
     const actualExitPath = `${ensuredDir}/.vibaocode-codex-exit.txt`;
     const actualPidPath = `${ensuredDir}/.vibaocode-codex.pid`;
+    const commandIdPath = `${ensuredDir}/.vibaocode-codex-command.txt`;
 
     await sandbox.writeFiles([
       {
@@ -641,24 +648,66 @@ export async function POST(request: NextRequest) {
       ].join(" && "),
     );
 
-    // Important: use Vercel Sandbox detached execution, not shell "nohup &".
-    // A detached Sandbox command is owned by the VM session and keeps running
-    // after this HTTP request returns. Plain background children can be reaped
-    // when the command/session boundary closes.
-    await sandbox.runCommand({
+    // A persistent Sandbox preserves the filesystem between sessions, but a
+    // session timeout still terminates running processes. Reserve enough live
+    // session time before launching a large coding job.
+    const sessionBudget = await reserveLongAgentSession(sandbox);
+
+    // Use Vercel Sandbox detached execution, not shell "nohup &". Detached
+    // commands are first-class Sandbox commands and remain attached to the
+    // active microVM session after this HTTP request returns.
+    const detachedCommand = await sandbox.runCommand({
       cmd: "bash",
       args: ["-lc", innerCommand],
       cwd: ensuredDir,
       detached: true,
     });
 
+    await sandbox.writeFiles([
+      {
+        path: commandIdPath,
+        content: Buffer.from(detachedCommand.cmdId, "utf8"),
+      },
+    ]);
+
+    // Give the runner a short moment to create its PID/exit markers. This
+    // catches launch failures immediately instead of making the UI wait for the
+    // next status poll with only "dừng bất thường".
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    const launchProbe = await shell(
+      sandbox,
+      [
+        `PID="$(cat ${JSON.stringify(actualPidPath)} 2>/dev/null || true)"`,
+        `EXIT="$(cat ${JSON.stringify(actualExitPath)} 2>/dev/null || true)"`,
+        `if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then STATE=running; elif [ -n "$EXIT" ]; then STATE=finished; else STATE=missing; fi`,
+        `printf '%s|%s|%s' "$STATE" "$PID" "$EXIT"`,
+      ].join("; "),
+    );
+
+    const [launchState, launchPid, launchExit] = launchProbe.stdout.trim().split("|");
+
+    if (launchState === "missing") {
+      const stderrTail = await shell(
+        sandbox,
+        `tail -n 160 ${JSON.stringify(actualStderrPath)} 2>/dev/null || true`,
+      );
+      throw new Error(
+        `Codex detached command không khởi động được trong Sandbox. command=${detachedCommand.cmdId}\n${stderrTail.stdout.slice(-3000)}`,
+      );
+    }
+
     return NextResponse.json(
       {
         started: true,
-        running: true,
+        running: launchState === "running",
+        finished: launchState === "finished",
+        launchPid: launchPid || null,
+        launchExitCode: launchExit ? Number(launchExit) : null,
+        commandId: detachedCommand.cmdId,
         model: requestedModel || "Codex default",
         reasoning: requestedReasoning || "default",
         version: codex.version,
+        sessionBudget,
         progress: await readProgress(sandbox, progressPath),
       },
       { status: 202 },
