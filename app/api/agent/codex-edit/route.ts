@@ -153,8 +153,13 @@ export async function POST(request: NextRequest) {
     const requestedModel = String(body.codexModel || "").trim();
     const requestedReasoning = String(body.codexReasoning || "").trim().toLowerCase();
     const referenceImages = (Array.isArray(body.referenceImages) ? body.referenceImages : [])
-      .map((item: any) => ({
+      .map((item: any, index: number) => ({
         path: String(item?.path || "").trim(),
+        refId: String(item?.refId || `REF-${String(index + 1).padStart(2, "0")}`)
+          .trim()
+          .toUpperCase()
+          .slice(0, 24),
+        title: String(item?.title || item?.name || "reference image").trim().slice(0, 120),
         name: String(item?.name || "reference image").trim().slice(0, 140),
         kind: String(item?.kind || "style").trim().slice(0, 32),
         note: String(item?.note || "").trim().slice(0, 500),
@@ -712,10 +717,16 @@ export async function POST(request: NextRequest) {
           "",
           "REFERENCE IMAGES ATTACHED TO THIS TURN:",
           ...referenceImages.map(
-            (item: any, index: number) =>
-              `${index + 1}. ${item.name} • type=${item.kind} • local_path=${item.path}${item.note ? ` • note=${item.note}` : ""}`,
+            (item: any) =>
+              `${item.refId} | title=${item.title} | role=${item.kind} | file=${item.name} | local_path=${item.path}${item.note ? ` | use=${item.note}` : ""}`,
           ),
-          "Use these images as visual/context references. Inspect them before making visual decisions.",
+          "REFERENCE RULES:",
+          "- Treat each image as an explicitly scoped reference, not as a global style blend.",
+          "- Follow each reference note/use instruction literally when deciding which visual element it controls.",
+          "- If references conflict, prefer the image whose role/note explicitly matches the current component or screen.",
+          "- Do not borrow layout from an asset-sheet reference unless its note says to do so.",
+          "- Do not borrow puzzle styling from Home/City references unless explicitly instructed.",
+          "Inspect the active images before making visual decisions.",
         ]
       : [];
 
