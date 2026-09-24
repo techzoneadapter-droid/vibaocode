@@ -2229,7 +2229,7 @@ export default function Workspace() {
             <div className="builder-actions">
               <button
                 className="run-button"
-                onClick={runCloudProject}
+                onClick={() => { void runCloudProject(); }}
                 disabled={!treeItems.length || runLoading}
                 type="button"
               >
@@ -2342,7 +2342,7 @@ export default function Workspace() {
                             : "Sau khi Load, bạn chỉ cần mô tả thay đổi cho AI."}
                         </span>
                         {treeItems.length ? (
-                          <button className="run-button large" onClick={runCloudProject} disabled={runLoading} type="button">
+                          <button className="run-button large" onClick={() => { void runCloudProject(); }} disabled={runLoading} type="button">
                             {runLoading ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
                             Chạy dự án
                           </button>
@@ -2887,7 +2887,7 @@ export default function Workspace() {
               <div className="quick-actions-card">
                 <span className="eyebrow">QUICK ACTIONS</span>
                 <div className="quick-actions-grid">
-                  <button onClick={runCloudProject} disabled={!treeItems.length || runLoading} type="button">
+                  <button onClick={() => { void runCloudProject(); }} disabled={!treeItems.length || runLoading} type="button">
                     <Play size={14} /> Run app
                   </button>
                   <button onClick={testCloudProject} disabled={!treeItems.length || testLoading} type="button">
