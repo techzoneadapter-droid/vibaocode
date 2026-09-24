@@ -30,7 +30,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type RepoItem = {
   path: string;
@@ -348,6 +348,9 @@ export default function Workspace() {
   const [reviewBase, setReviewBase] = useState("");
   const [prUrl, setPrUrl] = useState("");
   const [treeItems, setTreeItems] = useState<RepoItem[]>([]);
+  const [remoteTreeSha, setRemoteTreeSha] = useState("");
+  const autoLoadedKeyRef = useRef("");
+  const remoteSyncBusyRef = useRef(false);
   const [selected, setSelected] = useState<FileState | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [originalContent, setOriginalContent] = useState("");
@@ -390,6 +393,17 @@ export default function Workspace() {
     sessionStorage.setItem("vibaocode.workspaceId", currentWorkspaceId);
     setWorkspaceId(currentWorkspaceId);
 
+    const savedProject = localStorage.getItem("vibaocode.project");
+    if (savedProject) {
+      try {
+        const project = JSON.parse(savedProject);
+        if (project.repo) setRepo(project.repo);
+        if (project.branch) setBranch(project.branch);
+      } catch {
+        // Ignore malformed persistent project metadata.
+      }
+    }
+
     const saved = sessionStorage.getItem("vibaocode.settings");
     if (!saved) return;
     try {
@@ -415,6 +429,100 @@ export default function Workspace() {
       // Ignore malformed session data.
     }
   }, []);
+
+  // Persist only non-secret project selection. This lets Vibaocode reopen the
+  // last project automatically without storing GitHub/API credentials long-term.
+  useEffect(() => {
+    if (!repo || !branch) return;
+    localStorage.setItem("vibaocode.project", JSON.stringify({ repo, branch }));
+  }, [repo, branch]);
+
+  // Zero-click startup: whenever the browser opens a project/branch for the
+  // first time, load GitHub, hard-sync the persistent Sandbox and open Preview.
+  useEffect(() => {
+    if (!workspaceId || !repo || !branch || repoLoading) return;
+    const key = `${workspaceId}::${repo}::${branch}`;
+    if (autoLoadedKeyRef.current === key) return;
+
+    const timer = window.setTimeout(() => {
+      autoLoadedKeyRef.current = key;
+      void connectRepo();
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [workspaceId, repo, branch]);
+
+  // Keep the visible preview following GitHub automatically. This is especially
+  // useful when an AI run auto-pushes main or another trusted tool updates main:
+  // no Load/Run/refresh button is required.
+  useEffect(() => {
+    if (!workspaceId || !repo || !branch || !treeItems.length) return;
+
+    const pollMs = githubToken ? 20000 : 60000;
+    const timer = window.setInterval(async () => {
+      if (
+        document.hidden ||
+        aiLoading ||
+        repoLoading ||
+        runLoading ||
+        testLoading ||
+        playTestLoading ||
+        visualLoopLoading ||
+        sandboxPushLoading ||
+        dirty ||
+        remoteSyncBusyRef.current
+      ) {
+        return;
+      }
+
+      try {
+        const query = new URLSearchParams({ repo, branch });
+        const response = await fetch(`/api/github/tree?${query}`, { headers: apiHeaders() });
+        if (!response.ok) return;
+        const data = await response.json();
+        const nextSha = String(data.sha || "");
+        if (!nextSha) return;
+
+        if (!remoteTreeSha) {
+          setRemoteTreeSha(nextSha);
+          return;
+        }
+
+        if (nextSha !== remoteTreeSha) {
+          remoteSyncBusyRef.current = true;
+          setTreeItems(data.items || []);
+      setRemoteTreeSha(String(data.sha || ""));
+          setRemoteTreeSha(nextSha);
+          setNotice("GitHub có bản mới • Vibaocode đang tự cập nhật Preview…");
+          await runCloudProject(true, true);
+          setPreviewKey((value) => value + 1);
+          setWorkspaceView("preview");
+        }
+      } catch {
+        // Background refresh is best-effort; never interrupt active work.
+      } finally {
+        remoteSyncBusyRef.current = false;
+      }
+    }, pollMs);
+
+    return () => window.clearInterval(timer);
+  }, [
+    workspaceId,
+    repo,
+    branch,
+    treeItems.length,
+    remoteTreeSha,
+    githubToken,
+    aiLoading,
+    repoLoading,
+    runLoading,
+    testLoading,
+    playTestLoading,
+    visualLoopLoading,
+    sandboxPushLoading,
+    dirty,
+  ]);
+
 
   const tree = useMemo(() => buildTree(treeItems), [treeItems]);
   const dirty = Boolean(selected) && editorContent !== originalContent;
@@ -461,8 +569,9 @@ export default function Workspace() {
       "vibaocode.settings",
       JSON.stringify({ repo, branch, githubToken, openAIKey, model, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, autoSync, previewUrl })
     );
+    localStorage.setItem("vibaocode.project", JSON.stringify({ repo, branch }));
     setSettingsOpen(false);
-    setNotice("Đã lưu cài đặt cho phiên trình duyệt này");
+    setNotice("Đã lưu cài đặt • dự án sẽ tự mở ở lần sau");
   };
 
   async function cleanupVercelSandbox() {
@@ -560,7 +669,7 @@ export default function Workspace() {
     setReferenceImages([]);
     setSandboxRunning(false);
     setPreviewUrl("");
-    setNotice(`Đã chọn ${fullName}. Bấm Load để mở dự án.`);
+    setNotice(`Đã chọn ${fullName} • đang tự mở dự án…`);
   }
 
   function disconnectGithub() {
@@ -717,7 +826,18 @@ export default function Workspace() {
       }
 
       setSandboxRevision(String(data.remoteSha || "").slice(0, 12));
-      setNotice(`Đã push & verify ${String(data.remoteSha || "").slice(0, 12)} lên ${branch}`);
+
+      const treeQuery = new URLSearchParams({ repo, branch });
+      const treeResponse = await fetch(`/api/github/tree?${treeQuery}`, { headers: apiHeaders() });
+      if (treeResponse.ok) {
+        const treeData = await treeResponse.json();
+        setTreeItems(treeData.items || []);
+        setRemoteTreeSha(String(treeData.sha || ""));
+      }
+
+      setPreviewKey((value) => value + 1);
+      setWorkspaceView("preview");
+      setNotice(`Đã tự lưu GitHub & cập nhật Preview • ${String(data.remoteSha || "").slice(0, 12)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không push được Cloud Sandbox.");
       setNotice("Push Sandbox thất bại");
@@ -1592,6 +1712,9 @@ export default function Workspace() {
         ...(after.runtime?.pageErrors || []),
       ];
 
+      setWorkspaceView("preview");
+      setPreviewView("live");
+      setPreviewKey((value) => value + 1);
       setAiProgress(100);
       setAiElapsedSeconds(0);
       setAiProgressLabel(
@@ -1769,11 +1892,27 @@ export default function Workspace() {
             githubToken,
             codexModel,
             codexReasoning,
+            autoPush: Boolean(githubToken && branch === "main"),
           }),
         });
         data = await resultResponse.json();
         if (!resultResponse.ok) {
           throw new Error(data.error || "Không lấy được kết quả Codex.");
+        }
+
+        if (data.autoPushResult?.verified) {
+          setSandboxRevision(String(data.autoPushResult.remoteSha || "").slice(0, 12));
+          try {
+            const treeQuery = new URLSearchParams({ repo, branch });
+            const treeResponse = await fetch(`/api/github/tree?${treeQuery}`, { headers: apiHeaders() });
+            if (treeResponse.ok) {
+              const treeData = await treeResponse.json();
+              setTreeItems(treeData.items || []);
+              setRemoteTreeSha(String(treeData.sha || ""));
+            }
+          } catch {
+            // Preview is already live from the Sandbox; tree refresh can retry in background.
+          }
         }
       } else {
         const endpoint = useExternalProvider
@@ -1839,7 +1978,13 @@ export default function Workspace() {
       setAiElapsedSeconds(0);
       setAiProgressLabel(data.checks?.passed === false ? "Hoàn tất • cần review test" : "Hoàn tất");
       setAiProgressDetail(`${data.files?.length || 0} file thay đổi`);
-      setNotice(`Project Agent đề xuất ${data.files?.length || 0} file bằng ${data.model || "AI"}`);
+      setNotice(
+        data.autoPushResult?.verified
+          ? `Hoàn tất • đã tự lưu main • Preview đang là bản mới nhất (${String(data.autoPushResult.remoteSha || "").slice(0, 12)})`
+          : data.checks?.passed === false
+            ? "Hoàn tất • Preview đã cập nhật, nhưng test chưa PASS nên chưa tự push main"
+            : `Project Agent hoàn tất ${data.files?.length || 0} file • Preview đã tự cập nhật`
+      );
 
       if (useCodexAccount) void loadCodexUsage(false);
     } catch (err) {

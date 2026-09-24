@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  compactWorkspace,
   ensurePublicRepo,
   ensureCodexCli,
   getWorkspaceSandbox,
@@ -148,6 +149,7 @@ export async function POST(request: NextRequest) {
     const prompt = String(body.prompt || "").trim();
     const githubToken = String(body.githubToken || "").trim();
     const action = String(body.action || "run");
+    const autoPush = Boolean(body.autoPush);
     const requestedModel = String(body.codexModel || "").trim();
     const requestedReasoning = String(body.codexReasoning || "").trim().toLowerCase();
     const referenceImages = (Array.isArray(body.referenceImages) ? body.referenceImages : [])
@@ -206,6 +208,9 @@ export async function POST(request: NextRequest) {
       }
 
       const result = await pushWorkspaceHead(sandbox, dir, branch, githubToken);
+      if (result.verified) {
+        await compactWorkspace(sandbox, dir, { afterPush: true });
+      }
       return NextResponse.json(result, { status: result.verified ? 200 : 409 });
     }
 
@@ -607,7 +612,7 @@ export async function POST(request: NextRequest) {
         phase: "Đang khởi động Live Preview…",
       });
 
-      const server = await startDevServer(sandbox, dir);
+      const server = await startDevServer(sandbox, dir, { restart: false });
 
       await writeProgress(sandbox, progressPath, {
         percent: 93,
@@ -621,6 +626,28 @@ export async function POST(request: NextRequest) {
         phase: checks.passed ? "Hoàn tất • Test PASS" : "Hoàn tất • cần review lỗi test",
         detail: `${files.length} file thay đổi`,
       });
+
+      const finalProgress = await readProgress(sandbox, progressPath);
+      let autoPushResult: Record<string, unknown> | null = null;
+
+      if (autoPush && githubToken && branch === "main" && checks.passed) {
+        try {
+          const pushed = await pushWorkspaceHead(sandbox, dir, branch, githubToken);
+          autoPushResult = pushed as unknown as Record<string, unknown>;
+          if (pushed.verified) {
+            await compactWorkspace(sandbox, dir, { afterPush: true });
+          }
+        } catch (error) {
+          autoPushResult = {
+            verified: false,
+            error: error instanceof Error ? error.message : "Auto push failed.",
+          };
+        }
+      } else {
+        // Even without a push, keep the active workspace compact while the
+        // live preview remains hot.
+        await compactWorkspace(sandbox, dir);
+      }
 
       if (codexExitCode !== 0 && files.length === 0) {
         return NextResponse.json(
@@ -649,7 +676,8 @@ export async function POST(request: NextRequest) {
         codexExitCode,
         codexLog: stderr.stdout.slice(-12000),
         usage: usageFromEvents(events.stdout),
-        progress: await readProgress(sandbox, progressPath),
+        progress: finalProgress,
+        autoPushResult,
         sandboxMode: "vercel-isolated + async-codex + latest-codex + ignore-user-config + danger-full-access",
         selectedModel: requestedModel || null,
         selectedReasoning: requestedReasoning || null,

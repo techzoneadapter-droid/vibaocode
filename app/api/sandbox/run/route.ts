@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  compactWorkspace,
   ensurePublicRepo,
   getWorkspaceSandbox,
   installDependencies,
@@ -43,7 +44,8 @@ export async function POST(request: NextRequest) {
         { forceRemote },
       );
       await installDependencies(sandbox, ensuredDir);
-      const server = await startDevServer(sandbox, ensuredDir);
+      await compactWorkspace(sandbox, ensuredDir);
+      const server = await startDevServer(sandbox, ensuredDir, { restart: forceRemote });
       const revision = await shell(
         sandbox,
         `cd ${JSON.stringify(ensuredDir)} && git rev-parse --short HEAD 2>/dev/null || true`,

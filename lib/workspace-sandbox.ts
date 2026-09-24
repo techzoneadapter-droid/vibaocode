@@ -589,6 +589,61 @@ export async function pushWorkspaceHead(
   };
 }
 
+export async function compactWorkspace(
+  sandbox: Sandbox,
+  activeDir: string,
+  options: { afterPush?: boolean } = {},
+) {
+  const reposRoot = "/vercel/sandbox/repos";
+  const afterPush = Boolean(options.afterPush);
+  const result = await shell(
+    sandbox,
+    `
+set +e
+mkdir -p ${JSON.stringify(reposRoot)}
+
+# Keep the active repo hot, but evict stale repo workspaces left by old branches
+# or projects after six hours. node_modules for the active repo remains cached.
+find ${JSON.stringify(reposRoot)} -mindepth 1 -maxdepth 1 -type d \
+  ! -path ${JSON.stringify(activeDir)} -mmin +360 -exec rm -rf {} + 2>/dev/null || true
+
+if [ -d ${JSON.stringify(activeDir + "/.git")} ]; then
+  cd ${JSON.stringify(activeDir)}
+
+  # Bound transient logs instead of allowing long AI sessions to grow forever.
+  for f in .vibaocode-dev.log .vibaocode-codex-events.jsonl .vibaocode-codex-stderr.log .vibaocode-codex-runner.log; do
+    if [ -f "$f" ] && [ "$(wc -c < "$f" 2>/dev/null || echo 0)" -gt 2097152 ]; then
+      tail -c 1048576 "$f" > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f"
+    fi
+  done
+
+  # Old visual-audit frames are disposable. Reference images are deliberately
+  # excluded because they are user input reused by future prompts.
+  if [ -d .vibaocode-visual ]; then
+    find .vibaocode-visual -mindepth 1 -type f -mmin +180 -delete 2>/dev/null || true
+    find .vibaocode-visual -depth -type d -empty -delete 2>/dev/null || true
+  fi
+
+  # Stale Codex coordination files from previous runs can be removed safely
+  # once they are no longer recent.
+  find . -maxdepth 1 -type f \
+    \( -name '.vibaocode-codex-*' -o -name '.vibaocode-package-hash.tmp' \) \
+    -mmin +180 -delete 2>/dev/null || true
+
+  if [ ${afterPush ? "1" : "0"} = "1" ]; then
+    git stash clear >/dev/null 2>&1 || true
+    git for-each-ref --format='%(refname:short)' refs/heads/vibaocode-rescue-* 2>/dev/null \
+      | xargs -r -n1 git branch -D >/dev/null 2>&1 || true
+    git reflog expire --expire=7.days --all >/dev/null 2>&1 || true
+    git gc --auto >/dev/null 2>&1 || true
+  fi
+fi
+`,
+  );
+
+  return result;
+}
+
 export async function installDependencies(
   sandbox: Sandbox,
   dir: string,
@@ -599,7 +654,10 @@ cd ${JSON.stringify(dir)}
 if [ ! -f package.json ]; then
   exit 0
 fi
-CURRENT_HASH="$(sha256sum package.json | cut -d' ' -f1)"
+CURRENT_HASH="$(
+  { sha256sum package.json 2>/dev/null; sha256sum package-lock.json pnpm-lock.yaml yarn.lock 2>/dev/null; } \
+    | sha256sum | cut -d' ' -f1
+)"
 OLD_HASH=""
 if [ -f .vibaocode-package-hash ]; then OLD_HASH="$(cat .vibaocode-package-hash)"; fi
 if [ ! -d node_modules ] || [ "$CURRENT_HASH" != "$OLD_HASH" ]; then
@@ -642,12 +700,31 @@ async function packageInfo(sandbox: Sandbox, dir: string) {
 export async function startDevServer(
   sandbox: Sandbox,
   dir: string,
+  options: { restart?: boolean } = {},
 ) {
   const info = await packageInfo(sandbox, dir);
   const scripts = info.scripts || {};
   const deps = info.deps || {};
   const previewUrl = sandbox.domain(3000);
   const previewHost = new URL(previewUrl).hostname.replace(/[^A-Za-z0-9.-]/g, "");
+  if (!options.restart) {
+    const healthy = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && curl -fsS http://127.0.0.1:3000 >/dev/null 2>&1 && echo READY || true`,
+    );
+    if (healthy.stdout.includes("READY")) {
+      const logResult = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && tail -n 80 .vibaocode-dev.log 2>/dev/null || true`,
+      );
+      return {
+        ok: true,
+        logs: logResult.stdout,
+        previewUrl,
+        reused: true,
+      };
+    }
+  }
   let startCommand = "";
 
   if (scripts.dev) {
