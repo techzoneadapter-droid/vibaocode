@@ -430,6 +430,13 @@ export default function Workspace() {
     }
   }, []);
 
+  const tree = useMemo(() => buildTree(treeItems), [treeItems]);
+  const dirty = Boolean(selected) && editorContent !== originalContent;
+  const aiReady =
+    aiScope === "file"
+      ? Boolean(selected && prompt.trim() && editorContent)
+      : Boolean(treeItems.length && prompt.trim());
+
   // Persist only non-secret project selection. This lets Vibaocode reopen the
   // last project automatically without storing GitHub/API credentials long-term.
   useEffect(() => {
@@ -491,7 +498,6 @@ export default function Workspace() {
         if (nextSha !== remoteTreeSha) {
           remoteSyncBusyRef.current = true;
           setTreeItems(data.items || []);
-      setRemoteTreeSha(String(data.sha || ""));
           setRemoteTreeSha(nextSha);
           setNotice("GitHub có bản mới • Vibaocode đang tự cập nhật Preview…");
           await runCloudProject(true, true);
@@ -524,12 +530,6 @@ export default function Workspace() {
   ]);
 
 
-  const tree = useMemo(() => buildTree(treeItems), [treeItems]);
-  const dirty = Boolean(selected) && editorContent !== originalContent;
-  const aiReady =
-    aiScope === "file"
-      ? Boolean(selected && prompt.trim() && editorContent)
-      : Boolean(treeItems.length && prompt.trim());
 
   useEffect(() => {
     if (!autoSync || !sandboxRunning || !dirty || !selected || !workspaceId) return;
@@ -718,6 +718,7 @@ export default function Workspace() {
       if (!response.ok) throw new Error(data.error || "Không đọc được repository.");
 
       setTreeItems(data.items || []);
+      setRemoteTreeSha(String(data.sha || ""));
       setSelected(null);
       setEditorContent("");
       setOriginalContent("");
