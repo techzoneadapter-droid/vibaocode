@@ -1659,6 +1659,8 @@ export default function Workspace() {
         codexReasoning,
         referenceImages: activeReferences.map((item) => ({
           path: item.path,
+          refId: item.refId,
+          title: item.title,
           name: item.name,
           kind: item.kind,
           note: item.note,
