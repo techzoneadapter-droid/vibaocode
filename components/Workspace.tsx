@@ -84,14 +84,27 @@ type ProjectProposal = {
 
 type ReferenceImage = {
   id: string;
+  refId: string;
+  title: string;
   name: string;
   size: number;
   mimeType: string;
   path: string;
-  kind: "style" | "ui" | "character" | "environment" | "logo-icon" | "other";
+  kind:
+    | "style"
+    | "screen-layout"
+    | "ui"
+    | "puzzle"
+    | "character"
+    | "environment"
+    | "logo-icon"
+    | "other";
   note: string;
   active: boolean;
 };
+
+const MAX_REFERENCE_IMAGES = 12;
+const MAX_REFERENCE_FILE_BYTES = 8 * 1024 * 1024;
 
 type CodexLimitWindow = {
   usedPercent?: number;
@@ -550,9 +563,23 @@ export default function Workspace() {
     if (!workspaceId || !repo) return;
     const key = `vibaocode.references.${workspaceId}.${repo}@${branch}`;
     try {
-      const saved = sessionStorage.getItem(key);
+      const saved = localStorage.getItem(key) || sessionStorage.getItem(key);
       const parsed = saved ? JSON.parse(saved) : [];
-      setReferenceImages(Array.isArray(parsed) ? parsed : []);
+      const normalized: ReferenceImage[] = Array.isArray(parsed)
+        ? parsed.slice(0, MAX_REFERENCE_IMAGES).map((item: any, index: number) => ({
+            ...item,
+            refId: String(item?.refId || `REF-${String(index + 1).padStart(2, "0")}`).toUpperCase(),
+            title: String(
+              item?.title ||
+                item?.name?.replace(/\.[^.]+$/, "") ||
+                `Reference ${index + 1}`,
+            ),
+            kind: item?.kind || "style",
+            note: String(item?.note || ""),
+            active: item?.active !== false,
+          }))
+        : [];
+      setReferenceImages(normalized);
     } catch {
       setReferenceImages([]);
     }
@@ -561,7 +588,9 @@ export default function Workspace() {
   useEffect(() => {
     if (!workspaceId || !repo) return;
     const key = `vibaocode.references.${workspaceId}.${repo}@${branch}`;
-    sessionStorage.setItem(key, JSON.stringify(referenceImages));
+    const serialized = JSON.stringify(referenceImages);
+    localStorage.setItem(key, serialized);
+    sessionStorage.setItem(key, serialized);
   }, [referenceImages, workspaceId, repo, branch]);
 
   const saveSettings = () => {
@@ -1307,15 +1336,15 @@ export default function Workspace() {
   }
 
   async function uploadReferenceFiles(files: File[]) {
-    const available = Math.max(0, 5 - referenceImages.length);
+    const available = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
     const selectedFiles = files
       .filter((file) => ["image/png", "image/jpeg", "image/webp"].includes(file.type))
       .slice(0, available);
 
     if (!selectedFiles.length) {
       setError(
-        referenceImages.length >= 5
-          ? "Tối đa 5 ảnh tham chiếu cho một project."
+        referenceImages.length >= MAX_REFERENCE_IMAGES
+          ? `Tối đa ${MAX_REFERENCE_IMAGES} ảnh tham chiếu cho một project.`
           : "Chỉ hỗ trợ PNG, JPG/JPEG và WEBP.",
       );
       return;
@@ -1328,8 +1357,8 @@ export default function Workspace() {
     try {
       const uploaded: ReferenceImage[] = [];
       for (const file of selectedFiles) {
-        if (file.size > 4 * 1024 * 1024) {
-          throw new Error(`${file.name} lớn hơn 4 MB.`);
+        if (file.size > MAX_REFERENCE_FILE_BYTES) {
+          throw new Error(`${file.name} lớn hơn 8 MB.`);
         }
 
         const form = new FormData();
@@ -1346,8 +1375,11 @@ export default function Workspace() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `Không upload được ${file.name}.`);
 
+        const ordinal = referenceImages.length + uploaded.length + 1;
         uploaded.push({
           id: data.id,
+          refId: `REF-${String(ordinal).padStart(2, "0")}`,
+          title: String(data.name || file.name || `Reference ${ordinal}`).replace(/\.[^.]+$/, ""),
           name: data.name,
           size: data.size,
           mimeType: data.mimeType,
@@ -1358,8 +1390,13 @@ export default function Workspace() {
         });
       }
 
-      setReferenceImages((current) => [...current, ...uploaded].slice(0, 5));
-      setNotice(`Đã thêm ${uploaded.length} ảnh tham chiếu • Codex sẽ nhận ảnh trực tiếp`);
+      setReferenceImages((current) => [...current, ...uploaded].slice(0, MAX_REFERENCE_IMAGES));
+      setNotice(
+        `Đã thêm ${uploaded.length} ảnh tham chiếu • ${Math.min(
+          MAX_REFERENCE_IMAGES,
+          referenceImages.length + uploaded.length,
+        )}/${MAX_REFERENCE_IMAGES} ảnh trong bộ reference`,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload ảnh thất bại.");
     } finally {
@@ -1372,6 +1409,22 @@ export default function Workspace() {
     setReferenceImages((current) =>
       current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
+  }
+
+  function moveReferenceImage(id: string, direction: -1 | 1) {
+    setReferenceImages((current) => {
+      const index = current.findIndex((item) => item.id === id);
+      const target = index + direction;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(target, 0, item);
+      return next;
+    });
+  }
+
+  function setAllReferencesActive(active: boolean) {
+    setReferenceImages((current) => current.map((item) => ({ ...item, active })));
   }
 
   async function removeReferenceImage(item: ReferenceImage) {
@@ -1448,11 +1501,20 @@ export default function Workspace() {
 
   async function runCodexRepairPrompt(
     promptText: string,
-    extraReferences: Array<{ path: string; name: string; kind: string; note: string }> = [],
+    extraReferences: Array<{
+      path: string;
+      name: string;
+      kind: string;
+      note: string;
+      refId?: string;
+      title?: string;
+    }> = [],
   ) {
     const activeReferences = [
       ...referenceImages.filter((item) => item.active).map((item) => ({
         path: item.path,
+        refId: item.refId,
+        title: item.title,
         name: item.name,
         kind: item.kind,
         note: item.note,
@@ -1474,6 +1536,8 @@ export default function Workspace() {
         codexReasoning,
         referenceImages: activeReferences.map((item) => ({
           path: item.path,
+          refId: item.refId || "",
+          title: item.title || item.name,
           name: item.name,
           kind: item.kind,
           note: item.note,
@@ -1777,7 +1841,7 @@ export default function Workspace() {
           activeReferences
             .map(
               (item, index) =>
-                `${index + 1}. ${item.name} • type=${item.kind}${item.note ? ` • note=${item.note}` : ""}`,
+                `${item.refId || `REF-${String(index + 1).padStart(2, "0")}`} | title=${item.title || item.name} | role=${item.kind} | file=${item.name}${item.note ? ` | use=${item.note}` : ""}`,
             )
             .join("\n")
         : "";
@@ -1808,6 +1872,8 @@ export default function Workspace() {
             codexReasoning,
             referenceImages: activeReferences.map((item) => ({
               path: item.path,
+              refId: item.refId,
+              title: item.title,
               name: item.name,
               kind: item.kind,
               note: item.note,
@@ -2827,9 +2893,17 @@ export default function Workspace() {
                   </div>
                   <div className="reference-images-actions">
                     {referenceImages.length ? (
-                      <button className="text-button" onClick={clearReferenceImages} type="button">
-                        <Trash2 size={11} /> Xóa tất cả
-                      </button>
+                      <>
+                        <button className="text-button" onClick={() => setAllReferencesActive(true)} type="button">
+                          AI tất cả
+                        </button>
+                        <button className="text-button" onClick={() => setAllReferencesActive(false)} type="button">
+                          Tắt AI
+                        </button>
+                        <button className="text-button" onClick={clearReferenceImages} type="button">
+                          <Trash2 size={11} /> Xóa tất cả
+                        </button>
+                      </>
                     ) : null}
                     <label className="reference-upload-button">
                       {referenceUploading ? <Loader2 className="spin" size={12} /> : <ImagePlus size={12} />}
@@ -2839,7 +2913,7 @@ export default function Workspace() {
                         accept="image/png,image/jpeg,image/webp"
                         multiple
                         hidden
-                        disabled={referenceUploading || referenceImages.length >= 5}
+                        disabled={referenceUploading || referenceImages.length >= MAX_REFERENCE_IMAGES}
                         onChange={(event) => {
                           const files = Array.from(event.target.files || []);
                           event.currentTarget.value = "";
@@ -2874,14 +2948,14 @@ export default function Workspace() {
                   <span>
                     {referenceImages.length
                       ? `${referenceImages.filter((item) => item.active).length}/${referenceImages.length} ảnh đang gửi cho AI`
-                      : "Kéo ảnh mẫu vào đây • PNG/JPG/WEBP • tối đa 5 ảnh"}
+                      : `Kéo nhiều ảnh mẫu vào đây • PNG/JPG/WEBP • tối đa ${MAX_REFERENCE_IMAGES} ảnh`}
                   </span>
-                  <small>Codex nhận ảnh trực tiếp bằng vision; mỗi ảnh tối đa 4 MB.</small>
+                  <small>Codex nhận ảnh trực tiếp bằng vision • mỗi ảnh tối đa 8 MB • chỉ ảnh bật AI mới được gửi.</small>
                 </div>
 
                 {referenceImages.length ? (
                   <div className="reference-image-list">
-                    {referenceImages.map((item) => (
+                    {referenceImages.map((item, index) => (
                       <div className={`reference-image-item ${item.active ? "active" : ""}`} key={item.id}>
                         <button
                           className="reference-thumb"
@@ -2893,8 +2967,36 @@ export default function Workspace() {
                         </button>
                         <div className="reference-image-meta">
                           <div className="reference-image-title">
-                            <strong title={item.name}>{item.name}</strong>
+                            <strong title={item.name}>
+                              {item.refId || `REF-${String(index + 1).padStart(2, "0")}`} • {item.title || item.name}
+                            </strong>
                             <span>{formatBytes(item.size)}</span>
+                          </div>
+                          <div className="reference-identity-row">
+                            <input
+                              className="reference-id-input"
+                              value={item.refId || ""}
+                              maxLength={16}
+                              onChange={(event) =>
+                                patchReferenceImage(item.id, {
+                                  refId: event.target.value
+                                    .toUpperCase()
+                                    .replace(/[^A-Z0-9_-]/g, "")
+                                    .slice(0, 16),
+                                })
+                              }
+                              placeholder="REF-01"
+                              title="ID dùng trực tiếp trong prompt"
+                            />
+                            <input
+                              className="reference-title-input"
+                              value={item.title || ""}
+                              maxLength={60}
+                              onChange={(event) =>
+                                patchReferenceImage(item.id, { title: event.target.value })
+                              }
+                              placeholder="Tên vai trò, ví dụ Home target"
+                            />
                           </div>
                           <div className="reference-image-controls">
                             <select
@@ -2905,10 +3007,12 @@ export default function Workspace() {
                                 })
                               }
                             >
-                              <option value="style">Style</option>
-                              <option value="ui">UI</option>
+                              <option value="style">Master style</option>
+                              <option value="screen-layout">Screen layout</option>
+                              <option value="ui">UI / Components</option>
+                              <option value="puzzle">Puzzle assets</option>
                               <option value="character">Character</option>
-                              <option value="environment">Environment</option>
+                              <option value="environment">Environment / Buildings</option>
                               <option value="logo-icon">Logo / Icon</option>
                               <option value="other">Other</option>
                             </select>
@@ -2923,6 +3027,24 @@ export default function Workspace() {
                               AI
                             </label>
                             <button
+                              className="reference-order-button"
+                              onClick={() => moveReferenceImage(item.id, -1)}
+                              disabled={index === 0}
+                              type="button"
+                              title="Đưa ảnh lên"
+                            >
+                              ↑
+                            </button>
+                            <button
+                              className="reference-order-button"
+                              onClick={() => moveReferenceImage(item.id, 1)}
+                              disabled={index === referenceImages.length - 1}
+                              type="button"
+                              title="Đưa ảnh xuống"
+                            >
+                              ↓
+                            </button>
+                            <button
                               className="reference-delete"
                               onClick={() => void removeReferenceImage(item)}
                               type="button"
@@ -2934,11 +3056,11 @@ export default function Workspace() {
                           <input
                             className="reference-note"
                             value={item.note}
-                            maxLength={180}
+                            maxLength={500}
                             onChange={(event) =>
                               patchReferenceImage(item.id, { note: event.target.value })
                             }
-                            placeholder="Ghi chú: ví dụ phong cách voxel tươi sáng…"
+                            placeholder="Dùng ảnh này cho phần nào? Ví dụ: chỉ lấy layout Home, logo placement và hero city; không dùng cho Puzzle."
                           />
                         </div>
                       </div>
