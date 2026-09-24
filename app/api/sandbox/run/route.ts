@@ -22,6 +22,7 @@ export async function POST(request: NextRequest) {
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
     const githubToken = String(body.githubToken || "").trim();
+    const forceRemote = Boolean(body.forceRemote);
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -34,7 +35,13 @@ export async function POST(request: NextRequest) {
     const dir = repoDirectory(repo, branch);
 
     if (action === "start") {
-      const ensuredDir = await ensurePublicRepo(sandbox, repo, branch, githubToken);
+      const ensuredDir = await ensurePublicRepo(
+        sandbox,
+        repo,
+        branch,
+        githubToken,
+        { forceRemote },
+      );
       await installDependencies(sandbox, ensuredDir);
       const server = await startDevServer(sandbox, ensuredDir);
       const revision = await shell(
