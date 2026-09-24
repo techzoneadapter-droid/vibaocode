@@ -9,7 +9,7 @@ import {
 
 export const maxDuration = 60;
 
-const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const ALLOWED_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -62,7 +62,7 @@ export async function POST(request: NextRequest) {
 
     if (file.size <= 0 || file.size > MAX_FILE_BYTES) {
       return NextResponse.json(
-        { error: "Mỗi ảnh phải nhỏ hơn hoặc bằng 4 MB." },
+        { error: "Mỗi ảnh phải nhỏ hơn hoặc bằng 8 MB." },
         { status: 400 },
       );
     }
