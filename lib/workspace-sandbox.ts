@@ -202,6 +202,7 @@ export async function ensurePublicRepo(
   repo: string,
   branch: string,
   githubToken = "",
+  options: { forceRemote?: boolean } = {},
 ) {
   if (!validRepo(repo) || !validBranch(branch)) {
     throw new Error("Repo hoặc branch không hợp lệ.");
@@ -322,7 +323,7 @@ export async function ensurePublicRepo(
       `cd ${JSON.stringify(dir)} && git diff --quiet HEAD -- || echo dirty`,
     );
 
-    if (!trackedDirty.stdout.trim()) {
+    if (options.forceRemote || !trackedDirty.stdout.trim()) {
       let sync = await anonymousFetch();
 
       if (sync.exitCode !== 0 && authHeader) {
