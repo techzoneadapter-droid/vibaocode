@@ -2694,6 +2694,8 @@ button:disabled {
 .reference-images-actions {
   gap: 5px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .reference-upload-button {
@@ -2763,6 +2765,10 @@ button:disabled {
   display: grid;
   gap: 7px;
   margin-top: 8px;
+  max-height: 490px;
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
 }
 
 .reference-image-item {
@@ -2831,6 +2837,37 @@ button:disabled {
 .reference-image-controls {
   min-width: 0;
   gap: 5px;
+  flex-wrap: wrap;
+}
+
+.reference-identity-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 5px;
+}
+
+.reference-id-input,
+.reference-title-input {
+  min-width: 0;
+  height: 27px;
+  border: 1px solid #223239;
+  border-radius: 6px;
+  background: #0b1317;
+  color: #b9c9cd;
+  padding: 0 7px;
+  font-size: 7px;
+  outline: none;
+}
+
+.reference-id-input {
+  color: #83e5c2;
+  font-weight: 900;
+  letter-spacing: 0.25px;
+}
+
+.reference-id-input:focus,
+.reference-title-input:focus {
+  border-color: rgba(77, 201, 159, 0.45);
 }
 
 .reference-image-controls select {
@@ -2862,6 +2899,31 @@ button:disabled {
   width: 11px;
   height: 11px;
   accent-color: #46c89c;
+}
+
+.reference-order-button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #26373d;
+  border-radius: 6px;
+  background: #0c1519;
+  color: #8aa1a8;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.reference-order-button:hover:not(:disabled) {
+  color: #cce6df;
+  border-color: rgba(77, 201, 159, 0.4);
+}
+
+.reference-order-button:disabled {
+  opacity: 0.28;
+  cursor: default;
 }
 
 .reference-delete {
