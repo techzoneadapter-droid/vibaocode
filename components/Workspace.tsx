@@ -709,7 +709,6 @@ export default function Workspace() {
           repo,
           branch,
           githubToken,
-          forceRemote,
         }),
       });
       const data = await response.json();
@@ -745,6 +744,7 @@ export default function Workspace() {
           repo,
           branch,
           githubToken,
+          forceRemote,
         }),
       });
       const data = await response.json();
