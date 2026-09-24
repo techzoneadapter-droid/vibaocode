@@ -632,6 +632,12 @@ export default function Workspace() {
       } else {
         setProjectContext("");
       }
+
+      // "Load" means "open the exact current GitHub branch". Refresh the
+      // persistent Sandbox from remote and restart preview immediately so an
+      // old Sandbox cannot keep showing stale code after GitHub has advanced.
+      setNotice("Đã đọc GitHub • đang đồng bộ Cloud Sandbox về bản mới nhất…");
+      await runCloudProject(true, true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không thể kết nối GitHub.");
       setNotice("Kết nối thất bại");
@@ -703,6 +709,7 @@ export default function Workspace() {
           repo,
           branch,
           githubToken,
+          forceRemote,
         }),
       });
       const data = await response.json();
@@ -720,8 +727,8 @@ export default function Workspace() {
     }
   }
 
-  async function runCloudProject() {
-    if (!workspaceId || !treeItems.length) {
+  async function runCloudProject(forceRemote = false, skipLoadedCheck = false) {
+    if (!workspaceId || (!skipLoadedCheck && !treeItems.length)) {
       setError("Hãy Load repository trước khi chạy.");
       return false;
     }
