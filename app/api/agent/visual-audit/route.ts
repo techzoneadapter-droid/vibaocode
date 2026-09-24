@@ -182,8 +182,13 @@ export async function POST(request: NextRequest) {
     const requestedModel = String(body.codexModel || "").trim();
     const requestedReasoning = String(body.codexReasoning || "medium").trim().toLowerCase();
     const referenceImages = (Array.isArray(body.referenceImages) ? body.referenceImages : [])
-      .map((item: any) => ({
+      .map((item: any, index: number) => ({
         path: String(item?.path || "").trim(),
+        refId: String(item?.refId || `REF-${String(index + 1).padStart(2, "0")}`)
+          .trim()
+          .toUpperCase()
+          .slice(0, 24),
+        title: String(item?.title || item?.name || "reference").trim().slice(0, 120),
         name: String(item?.name || "reference").trim().slice(0, 140),
         kind: String(item?.kind || "style").trim().slice(0, 32),
         note: String(item?.note || "").trim().slice(0, 500),
@@ -191,7 +196,7 @@ export async function POST(request: NextRequest) {
       .filter((item: any) =>
         /^\.vibaocode-references\/[A-Za-z0-9._-]+\.(?:png|jpe?g|webp)$/i.test(item.path)
       )
-      .slice(0, 5);
+      .slice(0, 12);
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -348,8 +353,8 @@ export async function POST(request: NextRequest) {
     const referenceContext = referenceImages.length
       ? referenceImages
           .map(
-            (item: any, index: number) =>
-              `${index + 1}. ${item.name} • type=${item.kind}${item.note ? ` • ${item.note}` : ""}`,
+            (item: any) =>
+              `${item.refId} | title=${item.title} | role=${item.kind} | file=${item.name}${item.note ? ` | use=${item.note}` : ""}`,
           )
           .join("\n")
       : "(No explicit reference images attached.)";
@@ -368,6 +373,12 @@ export async function POST(request: NextRequest) {
       "",
       "REFERENCE IMAGE ROLES:",
       referenceContext,
+      "",
+      "REFERENCE SCOPE RULES:",
+      "- Each reference has an explicit role and optional use instruction.",
+      "- Compare a screen/component only against the references whose role/use applies to it.",
+      "- Do not average all references into one generic style.",
+      "- When references conflict, the most specifically scoped reference wins.",
       "",
       "RENDERED SCREENS:",
       screenshotContext,
