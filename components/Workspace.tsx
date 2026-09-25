@@ -149,6 +149,26 @@ type CodexUsageSnapshot = {
   error?: string;
 };
 
+type XaiModelOption = {
+  id: string;
+  label?: string;
+  aliases?: string[];
+  contextLength?: number | null;
+  reasoning?: string[];
+  recommended?: boolean;
+};
+
+const XAI_FALLBACK_MODELS: XaiModelOption[] = [
+  { id: "grok-4.7", label: "Grok 4.7 — mạnh nhất cho code", reasoning: ["low","medium","high","xhigh"], recommended: true },
+  { id: "grok-4.6", label: "Grok 4.6 — frontier coding", reasoning: ["low","medium","high","xhigh"] },
+  { id: "grok-4.5", label: "Grok 4.5 — coding/agentic", reasoning: ["low","medium","high"] },
+  { id: "grok-4.3", label: "Grok 4.3 — nhanh, context lớn", reasoning: ["none","low","medium","high","xhigh"] },
+  { id: "grok-4.20-0309-reasoning", label: "Grok 4.20 Reasoning", reasoning: ["low","medium","high","xhigh"] },
+  { id: "grok-4.20-0309-non-reasoning", label: "Grok 4.20 Non-Reasoning", reasoning: [] },
+  { id: "grok-4.20-multi-agent-0309", label: "Grok 4.20 Multi-Agent", reasoning: ["low","medium","high","xhigh"] },
+  { id: "grok-build-0.1", label: "Grok Build 0.1 — coding", reasoning: [] },
+];
+
 const devices: Device[] = [
   { label: "Android Small", width: 360, height: 800 },
   { label: "Pixel", width: 390, height: 844 },
@@ -306,9 +326,14 @@ export default function Workspace() {
   const [githubConnecting, setGithubConnecting] = useState(false);
   const [openAIKey, setOpenAIKey] = useState("");
   const [model, setModel] = useState("gpt-5.3-codex");
-  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api">("openai-api");
+  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api" | "xai-api">("openai-api");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [xaiKey, setXaiKey] = useState("");
+  const [xaiModels, setXaiModels] = useState<XaiModelOption[]>(XAI_FALLBACK_MODELS);
+  const [xaiModelsLoading, setXaiModelsLoading] = useState(false);
+  const [xaiModel, setXaiModel] = useState("grok-4.7");
+  const [xaiReasoning, setXaiReasoning] = useState("xhigh");
   const [vercelCleanupToken, setVercelCleanupToken] = useState("");
   const [sandboxCleanupLoading, setSandboxCleanupLoading] = useState(false);
   const [sandboxCleanupResult, setSandboxCleanupResult] = useState("");
@@ -431,11 +456,14 @@ export default function Workspace() {
       if (data.model) setModel(data.model);
       if (data.codexModel) setCodexModel(data.codexModel);
       if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
-      if (["codex-account","openai-api","claude-api","gemini-api"].includes(data.aiProvider)) {
+      if (["codex-account","openai-api","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
       if (data.geminiKey) setGeminiKey(data.geminiKey);
+      if (data.xaiKey) setXaiKey(data.xaiKey);
+      if (data.xaiModel) setXaiModel(data.xaiModel);
+      if (data.xaiReasoning) setXaiReasoning(data.xaiReasoning);
       if (typeof data.autoSync === "boolean") setAutoSync(data.autoSync);
       if (data.previewUrl && data.previewUrl !== "https://vibaocode.vercel.app") setPreviewUrl(data.previewUrl);
     } catch {
@@ -596,7 +624,7 @@ export default function Workspace() {
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
-      JSON.stringify({ repo, branch, githubToken, openAIKey, model, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, autoSync, previewUrl })
+      JSON.stringify({ repo, branch, githubToken, openAIKey, model, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, xaiKey, xaiModel, xaiReasoning, autoSync, previewUrl })
     );
     localStorage.setItem("vibaocode.project", JSON.stringify({ repo, branch }));
     setSettingsOpen(false);
@@ -1290,6 +1318,58 @@ export default function Workspace() {
     }
   }
 
+  async function loadXaiModels(announce = false) {
+    setXaiModelsLoading(true);
+    try {
+      const response = await fetch("/api/ai/xai-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: xaiKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được danh sách model Grok.");
+
+      const models: XaiModelOption[] = Array.isArray(data.models) && data.models.length
+        ? data.models
+        : XAI_FALLBACK_MODELS;
+      setXaiModels(models);
+
+      const current = models.find((item) => item.id === xaiModel);
+      const selected =
+        current ||
+        models.find((item) => item.id === data.recommended) ||
+        models.find((item) => item.recommended) ||
+        models[0];
+
+      if (selected && !current) setXaiModel(selected.id);
+      const efforts = selected?.reasoning || [];
+      if (efforts.length && !efforts.includes(xaiReasoning)) {
+        setXaiReasoning(efforts.includes("xhigh") ? "xhigh" : efforts.includes("high") ? "high" : efforts[0]);
+      }
+
+      if (announce) {
+        setNotice(
+          data.connected
+            ? `Đã kết nối xAI • ${models.length} model Grok khả dụng`
+            : `Đã tải ${models.length} model Grok mẫu • thêm API key để kiểm tra model tài khoản`,
+        );
+      }
+    } catch (err) {
+      if (announce) setError(err instanceof Error ? err.message : "Không đọc được model Grok.");
+    } finally {
+      setXaiModelsLoading(false);
+    }
+  }
+
+  function chooseXaiModel(nextModel: string) {
+    setXaiModel(nextModel);
+    const selected = xaiModels.find((item) => item.id === nextModel);
+    const efforts = selected?.reasoning || [];
+    if (efforts.length && !efforts.includes(xaiReasoning)) {
+      setXaiReasoning(efforts.includes("xhigh") ? "xhigh" : efforts.includes("high") ? "high" : efforts[0]);
+    }
+  }
+
   async function diagnoseCodexAccount() {
     if (!workspaceId) return;
     setCodexDiagnosing(true);
@@ -1475,9 +1555,10 @@ export default function Workspace() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          provider: "openai",
-          apiKey: openAIKey,
-          model,
+          provider: aiProvider === "xai-api" ? "xai" : "openai",
+          apiKey: aiProvider === "xai-api" ? xaiKey : openAIKey,
+          model: aiProvider === "xai-api" ? xaiModel : model,
+          reasoning: aiProvider === "xai-api" ? xaiReasoning : undefined,
           prompt,
           filePath: selected.path,
           content: editorContent,
@@ -1836,7 +1917,8 @@ export default function Workspace() {
 
     try {
       const useCodexAccount = aiProvider === "codex-account";
-      const useExternalProvider = aiProvider === "claude-api" || aiProvider === "gemini-api";
+      const useExternalProvider =
+        aiProvider === "claude-api" || aiProvider === "gemini-api" || aiProvider === "xai-api";
       const activeReferences = referenceImages.filter((item) => item.active);
       const referenceText = activeReferences.length
         ? "\n\nREFERENCE IMAGE METADATA:\n" +
@@ -1997,8 +2079,20 @@ export default function Workspace() {
           body: JSON.stringify(
             useExternalProvider
               ? {
-                  provider: aiProvider === "claude-api" ? "anthropic" : "gemini",
-                  apiKey: aiProvider === "claude-api" ? anthropicKey : geminiKey,
+                  provider:
+                    aiProvider === "claude-api"
+                      ? "anthropic"
+                      : aiProvider === "xai-api"
+                        ? "xai"
+                        : "gemini",
+                  apiKey:
+                    aiProvider === "claude-api"
+                      ? anthropicKey
+                      : aiProvider === "xai-api"
+                        ? xaiKey
+                        : geminiKey,
+                  model: aiProvider === "xai-api" ? xaiModel : undefined,
+                  reasoning: aiProvider === "xai-api" ? xaiReasoning : undefined,
                   repo,
                   branch,
                   githubToken,
@@ -2769,7 +2863,9 @@ export default function Workspace() {
                       ? "Claude Sonnet 4.6"
                       : aiProvider === "gemini-api"
                         ? "Gemini 3.8 Flash"
-                        : model}
+                        : aiProvider === "xai-api"
+                          ? (xaiModels.find((item) => item.id === xaiModel)?.label || xaiModel || "Grok / xAI")
+                          : model}
                 </span>
                 <button className="text-button" onClick={() => setSettingsOpen(true)} type="button">
                   <Settings size={13} /> Connect
@@ -2817,6 +2913,44 @@ export default function Workspace() {
                       })()}
                     </select>
                   </label>
+                </div>
+              ) : null}
+
+              {aiProvider === "xai-api" ? (
+                <div className="codex-model-card">
+                  <div className="codex-model-card-head">
+                    <span className="eyebrow">GROK / xAI MODEL</span>
+                    <button className="text-button" onClick={() => loadXaiModels(true)} disabled={xaiModelsLoading} type="button">
+                      {xaiModelsLoading ? <Loader2 className="spin" size={11} /> : <RefreshCw size={11} />}
+                      Làm mới
+                    </button>
+                  </div>
+                  <label>
+                    Model
+                    <select value={xaiModel} onChange={(e) => chooseXaiModel(e.target.value)} disabled={xaiModelsLoading}>
+                      {xaiModels.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select value={xaiReasoning} onChange={(e) => setXaiReasoning(e.target.value)}>
+                      {(() => {
+                        const selected = xaiModels.find((item) => item.id === xaiModel);
+                        const efforts = selected?.reasoning || [];
+                        if (!efforts.length) return <option value="default">default</option>;
+                        return efforts.map((effort) => (
+                          <option key={effort} value={effort}>{effort}</option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                  <small className="usage-token-note">
+                    Grok 4.7 là lựa chọn mạnh nhất cho code. Model thực tế được tải từ xAI theo API key của bạn.
+                  </small>
                 </div>
               ) : null}
 
@@ -3312,7 +3446,7 @@ export default function Workspace() {
                   value={aiProvider}
                   onChange={(e) =>
                     setAiProvider(
-                      e.target.value as "openai-api" | "codex-account" | "claude-api" | "gemini-api"
+                      e.target.value as "openai-api" | "codex-account" | "claude-api" | "gemini-api" | "xai-api"
                     )
                   }
                 >
@@ -3320,6 +3454,7 @@ export default function Workspace() {
                   <option value="openai-api">OpenAI API</option>
                   <option value="claude-api">Claude API</option>
                   <option value="gemini-api">Gemini API</option>
+                  <option value="xai-api">Grok / xAI API</option>
                 </select>
               </label>
               {aiProvider === "codex-account" ? (
@@ -3452,6 +3587,54 @@ export default function Workspace() {
                   </label>
                   <p className="settings-hint">
                     Với workspace cloud/headless, Gemini chính thức khuyến nghị API key hoặc Vertex AI thay vì đăng nhập Google tương tác.
+                  </p>
+                </>
+              ) : aiProvider === "xai-api" ? (
+                <>
+                  <label>
+                    Grok model
+                    <select value={xaiModel} onChange={(e) => chooseXaiModel(e.target.value)} disabled={xaiModelsLoading}>
+                      {xaiModels.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label || item.id}{item.recommended ? " • mạnh nhất/khuyên dùng" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select value={xaiReasoning} onChange={(e) => setXaiReasoning(e.target.value)}>
+                      {(() => {
+                        const selected = xaiModels.find((item) => item.id === xaiModel);
+                        const efforts = selected?.reasoning || [];
+                        if (!efforts.length) return <option value="default">default</option>;
+                        return efforts.map((effort) => (
+                          <option key={effort} value={effort}>{effort}</option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                  <label>
+                    xAI API key
+                    <input
+                      type="password"
+                      value={xaiKey}
+                      onChange={(e) => setXaiKey(e.target.value)}
+                      placeholder="xai-…"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <div className="account-actions">
+                    <button className="primary-button" onClick={() => loadXaiModels(true)} disabled={xaiModelsLoading} type="button">
+                      {xaiModelsLoading ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
+                      Kết nối xAI / tải model
+                    </button>
+                    <a className="ghost-button" href="https://console.x.ai/" target="_blank" rel="noreferrer">
+                      Mở xAI Console
+                    </a>
+                  </div>
+                  <p className="settings-hint">
+                    Tài khoản Grok và xAI API dùng chung danh tính, nhưng API có billing riêng. Vibaocode tải danh sách model trực tiếp từ /v1/models của API key; Grok 4.7 được ưu tiên vì xAI hiện khuyên dùng cho code.
                   </p>
                 </>
               ) : (
