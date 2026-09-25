@@ -1994,7 +1994,8 @@ export default function Workspace() {
     setNotice("Project Agent đang chuẩn bị workspace…");
 
     try {
-      const useCodexAccount = aiProvider === "codex-account";
+      const useHybrid = aiProvider === "openai-codex-hybrid";
+      const useCodexAccount = aiProvider === "codex-account" || useHybrid;
       const useExternalProvider =
         aiProvider === "claude-api" || aiProvider === "gemini-api" || aiProvider === "xai-api";
       const activeReferences = referenceImages.filter((item) => item.active);
@@ -2008,8 +2009,53 @@ export default function Workspace() {
             .join("\n")
         : "";
       let data: any;
+      let executionPrompt = prompt;
+      let hybridDirectorPlan = "";
+      let hybridReviewChecklist: string[] = [];
 
       if (useCodexAccount) {
+        if (codexStatus !== "connected") {
+          throw new Error(
+            useHybrid
+              ? "Hybrid mode cần kết nối ChatGPT/Codex account trước."
+              : "Hãy kết nối ChatGPT/Codex trước.",
+          );
+        }
+
+        if (useHybrid) {
+          setAiProgress(4);
+          setAiProgressLabel("ChatGPT Director đang phân tích yêu cầu…");
+          setAiProgressDetail(`${openAIModels.find((item) => item.id === model)?.label || model} → Codex`);
+
+          const directorResponse = await fetch("/api/ai/openai-director", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              apiKey: openAIKey,
+              model,
+              reasoning: openAIReasoning,
+              repo,
+              branch,
+              githubToken,
+              prompt,
+              projectContext,
+              referenceText,
+            }),
+          });
+          const directorData = await directorResponse.json();
+          if (!directorResponse.ok) {
+            throw new Error(directorData.error || "ChatGPT Director không xử lý được yêu cầu.");
+          }
+
+          executionPrompt = String(directorData.codexPrompt || prompt);
+          hybridDirectorPlan = String(directorData.plan || "");
+          hybridReviewChecklist = Array.isArray(directorData.reviewChecklist)
+            ? directorData.reviewChecklist.map(String)
+            : [];
+          setProjectPlan(hybridDirectorPlan);
+          setAiProgress(7);
+          setAiProgressLabel("ChatGPT Director xong • đang giao việc cho Codex…");
+        }
         if (!sandboxRunning) {
           setAiProgress(4);
           setAiProgressLabel("Đang khởi động Cloud Runtime…");
@@ -2029,7 +2075,7 @@ export default function Workspace() {
             repo,
             branch,
             githubToken,
-            prompt,
+            prompt: executionPrompt,
             codexModel,
             codexReasoning,
             referenceImages: activeReferences.map((item) => ({
@@ -2129,6 +2175,14 @@ export default function Workspace() {
           throw new Error(data.error || "Không lấy được kết quả Codex.");
         }
 
+        if (useHybrid) {
+          data.plan = hybridDirectorPlan || data.plan || "";
+          const checklist = hybridReviewChecklist.length
+            ? "\n\nChatGPT Director checklist:\n" + hybridReviewChecklist.map((item) => `- ${item}`).join("\n")
+            : "";
+          data.summary = `${data.summary || "Codex đã hoàn tất chỉnh sửa."}${checklist}`;
+        }
+
         if (data.autoPushResult?.verified) {
           setSandboxRevision(String(data.autoPushResult.remoteSha || "").slice(0, 12));
           try {
@@ -2183,6 +2237,7 @@ export default function Workspace() {
                   githubToken,
                   apiKey: openAIKey,
                   model,
+                  reasoning: openAIReasoning,
                   prompt: prompt + referenceText,
                   projectContext,
                 }
@@ -2240,7 +2295,7 @@ export default function Workspace() {
   }
 
   async function cancelProjectAI() {
-    if (!workspaceId || aiProvider !== "codex-account") return;
+    if (!workspaceId || !["codex-account","openai-codex-hybrid"].includes(aiProvider)) return;
     try {
       await fetch("/api/agent/codex-edit", {
         method: "POST",
