@@ -3,11 +3,13 @@
 import {
   Bot,
   Check,
+  Copy,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Code2,
   Eye,
+  ExternalLink,
   FileCode2,
   FileText,
   Folder,
@@ -20,6 +22,7 @@ import {
   Loader2,
   MonitorSmartphone,
   Play,
+  QrCode,
   RefreshCw,
   RotateCcw,
   Save,
@@ -425,6 +428,10 @@ export default function Workspace() {
   const [workspaceView, setWorkspaceView] = useState<"preview" | "code" | "changes">("preview");
   const [rightPanelOpen, setRightPanelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [phonePreviewOpen, setPhonePreviewOpen] = useState(false);
+  const [phoneQrDataUrl, setPhoneQrDataUrl] = useState("");
+  const [phoneQrLoading, setPhoneQrLoading] = useState(false);
+  const [phonePreviewError, setPhonePreviewError] = useState("");
   const [repoLoading, setRepoLoading] = useState(false);
   const [fileLoading, setFileLoading] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
@@ -652,6 +659,45 @@ export default function Workspace() {
     setSettingsOpen(false);
     setNotice("Đã lưu cài đặt • dự án sẽ tự mở ở lần sau");
   };
+
+  async function openPhonePreview() {
+    if (!previewUrl) {
+      setError("Chưa có Preview URL. Hãy Run dự án trước.");
+      return;
+    }
+
+    setPhonePreviewOpen(true);
+    setPhonePreviewError("");
+    setPhoneQrLoading(true);
+    try {
+      const QRCode = await import("qrcode");
+      const dataUrl = await QRCode.toDataURL(previewUrl, {
+        errorCorrectionLevel: "M",
+        margin: 2,
+        width: 320,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+      setPhoneQrDataUrl(dataUrl);
+    } catch (err) {
+      setPhonePreviewError(err instanceof Error ? err.message : "Không tạo được QR preview.");
+      setPhoneQrDataUrl("");
+    } finally {
+      setPhoneQrLoading(false);
+    }
+  }
+
+  async function copyPhonePreviewUrl() {
+    if (!previewUrl) return;
+    try {
+      await navigator.clipboard.writeText(previewUrl);
+      setNotice("Đã sao chép link preview cho điện thoại");
+    } catch {
+      setPhonePreviewError("Trình duyệt không cho phép sao chép tự động. Hãy copy link thủ công.");
+    }
+  }
 
   async function cleanupVercelSandbox() {
     setSandboxCleanupLoading(true);
@@ -2746,6 +2792,16 @@ export default function Workspace() {
                         <option key={item.label} value={item.label}>{item.label}</option>
                       ))}
                     </select>
+                    <button
+                      className="ghost-button compact-button phone-preview-trigger"
+                      onClick={() => { void openPhonePreview(); }}
+                      disabled={!previewUrl || !sandboxRunning}
+                      title="Mở QR để chơi trực tiếp trên điện thoại"
+                      type="button"
+                    >
+                      <QrCode size={14} />
+                      Điện thoại
+                    </button>
                     <button className="icon-button small" onClick={() => setPreviewKey((v) => v + 1)} type="button">
                       <RefreshCw size={15} />
                     </button>
@@ -3529,6 +3585,81 @@ export default function Workspace() {
           </button>
         )}
       </section>
+
+      {phonePreviewOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setPhonePreviewOpen(false)}>
+          <section
+            className="settings-modal phone-preview-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="phone-preview-title"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="modal-head">
+              <div>
+                <span className="eyebrow">PHONE PREVIEW</span>
+                <h2 id="phone-preview-title">Chơi thử trên điện thoại</h2>
+              </div>
+              <button className="icon-button" onClick={() => setPhonePreviewOpen(false)} type="button">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="phone-preview-body">
+              <p>
+                Quét QR bằng camera điện thoại để mở đúng bản Preview đang chạy trong Cloud Sandbox.
+                Không cần cài app.
+              </p>
+
+              <div className="phone-preview-qr-shell">
+                {phoneQrLoading ? (
+                  <div className="phone-preview-loading">
+                    <Loader2 className="spin" size={28} />
+                    <span>Đang tạo QR…</span>
+                  </div>
+                ) : phoneQrDataUrl ? (
+                  <img src={phoneQrDataUrl} alt="QR mở preview trên điện thoại" />
+                ) : (
+                  <div className="phone-preview-loading error">
+                    <QrCode size={28} />
+                    <span>{phonePreviewError || "Chưa tạo được QR."}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="phone-preview-link">
+                <span>Preview URL</span>
+                <code title={previewUrl}>{previewUrl}</code>
+              </div>
+
+              {phonePreviewError ? <p className="phone-preview-error">{phonePreviewError}</p> : null}
+
+              <div className="phone-preview-actions">
+                <button className="ghost-button" onClick={() => { void copyPhonePreviewUrl(); }} type="button">
+                  <Copy size={14} />
+                  Sao chép link
+                </button>
+                <a className="ghost-button" href={previewUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink size={14} />
+                  Mở tab mới
+                </a>
+                <button className="primary-button" onClick={() => { void openPhonePreview(); }} disabled={phoneQrLoading} type="button">
+                  {phoneQrLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                  Tạo lại QR
+                </button>
+              </div>
+
+              <div className="phone-preview-note">
+                <MonitorSmartphone size={16} />
+                <span>
+                  QR được tạo ngay trong trình duyệt và không gửi Preview URL sang dịch vụ QR bên thứ ba.
+                  Link chỉ hoạt động khi Cloud Sandbox còn online.
+                </span>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {settingsOpen ? (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
