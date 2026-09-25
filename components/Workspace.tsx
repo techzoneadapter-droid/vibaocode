@@ -1221,7 +1221,7 @@ export default function Workspace() {
         if (statusData.connected) {
           setCodexStatus("connected");
           setCodexPhase("complete");
-          setAiProvider("codex-account");
+          setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
           setCodexUserCode("");
           setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
           void loadCodexUsage(false);
@@ -3579,25 +3579,68 @@ export default function Workspace() {
                   value={aiProvider}
                   onChange={(e) =>
                     setAiProvider(
-                      e.target.value as "openai-api" | "codex-account" | "claude-api" | "gemini-api" | "xai-api"
+                      e.target.value as "openai-api" | "codex-account" | "openai-codex-hybrid" | "claude-api" | "gemini-api" | "xai-api"
                     )
                   }
                 >
                   <option value="codex-account">ChatGPT / Codex account</option>
-                  <option value="openai-api">OpenAI API</option>
+                  <option value="openai-codex-hybrid">Hybrid • ChatGPT Director + Codex Builder</option>
+                  <option value="openai-api">ChatGPT models / OpenAI API</option>
                   <option value="claude-api">Claude API</option>
                   <option value="gemini-api">Gemini API</option>
                   <option value="xai-api">Grok / xAI API</option>
                 </select>
               </label>
-              {aiProvider === "codex-account" ? (
+              {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") ? (
                 <div className="account-connect-card">
                   <div>
-                    <strong>ChatGPT / Codex</strong>
+                    <strong>{aiProvider === "openai-codex-hybrid" ? "Hybrid • ChatGPT Director + Codex Builder" : "ChatGPT / Codex"}</strong>
                     <span className={`connection-state ${codexStatus}`}>
                       {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
                     </span>
                   </div>
+                  {aiProvider === "openai-codex-hybrid" ? (
+                    <div className="codex-settings-model">
+                      <label>
+                        ChatGPT Director model
+                        <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
+                          {openAIModels.map((item) => (
+                            <option key={item.id} value={item.id}>
+                              {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        ChatGPT reasoning
+                        <select value={openAIReasoning} onChange={(e) => setOpenAIReasoning(e.target.value)}>
+                          {(() => {
+                            const selected = openAIModels.find((item) => item.id === model);
+                            const efforts = selected?.reasoning || [];
+                            if (!efforts.length) return <option value="high">high</option>;
+                            return efforts.map((effort) => (
+                              <option key={effort} value={effort}>{effort}</option>
+                            ));
+                          })()}
+                        </select>
+                      </label>
+                      <label>
+                        OpenAI API key
+                        <input
+                          type="password"
+                          value={openAIKey}
+                          onChange={(e) => setOpenAIKey(e.target.value)}
+                          placeholder="sk-…"
+                          autoComplete="off"
+                        />
+                      </label>
+                      <button className="ghost-button" onClick={() => loadOpenAIModels(true)} disabled={openAIModelsLoading} type="button">
+                        {openAIModelsLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
+                        Tải model ChatGPT
+                      </button>
+                      <small>ChatGPT lập kế hoạch/prompt → Codex sửa code, chạy test và tự lưu main khi PASS.</small>
+                    </div>
+                  ) : null}
                   {codexStatus === "connected" ? (
                     <div className="codex-settings-model">
                       <label>
@@ -3682,7 +3725,7 @@ export default function Workspace() {
                     </details>
                   ) : null}
                   <p className="settings-hint">
-                    Vibaocode dùng Device Code Authorization chính thức của Codex CLI, không đọc cookie ChatGPT. Nếu không ra mã, hãy bật Device Code Authorization trong ChatGPT → Settings → Security rồi tạo mã mới.
+                    Codex dùng Device Code Authorization chính thức của ChatGPT. {aiProvider === "openai-codex-hybrid" ? "Hybrid dùng thêm OpenAI API cho ChatGPT Director; API được tính phí riêng với gói ChatGPT." : "Vibaocode không đọc cookie ChatGPT."} Nếu không ra mã, hãy bật Device Code Authorization trong ChatGPT → Settings → Security rồi tạo mã mới.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
@@ -3773,17 +3816,30 @@ export default function Workspace() {
               ) : (
                 <>
                   <label>
-                    Model
-                    <select value={model} onChange={(e) => setModel(e.target.value)}>
-                      <option value="gpt-5.3-codex">GPT-5.3 Codex — coding</option>
-                      <option value="gpt-5.6-luna">GPT-5.6 Luna — tiết kiệm</option>
-                      <option value="gpt-5.6-terra">GPT-5.6 Terra — cân bằng</option>
-                      <option value="gpt-5.6-sol">GPT-5.6 Sol — mạnh</option>
-                      <option value="gpt-6-astra">GPT-6 Astra — cao nhất</option>
+                    ChatGPT / OpenAI model
+                    <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
+                      {openAIModels.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label || item.id}{item.recommended ? " • mạnh nhất/khuyên dùng" : ""}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   <label>
-                    API key <span>(để trống nếu server đã có OPENAI_API_KEY)</span>
+                    Reasoning
+                    <select value={openAIReasoning} onChange={(e) => setOpenAIReasoning(e.target.value)}>
+                      {(() => {
+                        const selected = openAIModels.find((item) => item.id === model);
+                        const efforts = selected?.reasoning || [];
+                        if (!efforts.length) return <option value="high">high</option>;
+                        return efforts.map((effort) => (
+                          <option key={effort} value={effort}>{effort}</option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                  <label>
+                    OpenAI API key <span>(để trống nếu server đã có OPENAI_API_KEY)</span>
                     <input
                       type="password"
                       value={openAIKey}
@@ -3792,6 +3848,18 @@ export default function Workspace() {
                       autoComplete="off"
                     />
                   </label>
+                  <div className="account-actions">
+                    <button className="primary-button" onClick={() => loadOpenAIModels(true)} disabled={openAIModelsLoading} type="button">
+                      {openAIModelsLoading ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                      Kết nối OpenAI / tải model
+                    </button>
+                    <a className="ghost-button" href="https://platform.openai.com/" target="_blank" rel="noreferrer">
+                      Mở OpenAI Platform
+                    </a>
+                  </div>
+                  <p className="settings-hint">
+                    Đây là model qua OpenAI API, không dùng quota ChatGPT Plus/Pro. Danh sách model được tải trực tiếp từ /v1/models theo API key của bạn.
+                  </p>
                 </>
               )}
             </div>
