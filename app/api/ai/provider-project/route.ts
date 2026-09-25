@@ -131,6 +131,61 @@ async function callAnthropic(apiKey: string, prompt: string, schemaName: string,
   return block.input;
 }
 
+function extractXaiOutputText(data: any) {
+  if (typeof data?.output_text === "string") return data.output_text;
+  if (!Array.isArray(data?.output)) return "";
+  for (const item of data.output) {
+    if (!Array.isArray(item?.content)) continue;
+    for (const content of item.content) {
+      if (content?.type === "output_text" && typeof content?.text === "string") {
+        return content.text;
+      }
+    }
+  }
+  return "";
+}
+
+async function callXai(
+  apiKey: string,
+  model: string,
+  reasoning: string,
+  prompt: string,
+  schemaName: string,
+  schema: any,
+) {
+  const body: any = {
+    model: model || "grok-4.7",
+    input: prompt,
+    text: {
+      format: {
+        type: "json_schema",
+        name: schemaName,
+        strict: true,
+        schema,
+      },
+    },
+  };
+  if (reasoning && reasoning !== "default") {
+    body.reasoning = { effort: reasoning };
+  }
+
+  const response = await fetch("https://api.x.ai/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || data?.message || "xAI API request failed.");
+  }
+  const text = extractXaiOutputText(data);
+  if (!text) throw new Error("Grok không trả về structured output.");
+  return JSON.parse(text);
+}
+
 async function callGemini(apiKey: string, prompt: string, schema: any) {
   const model = "gemini-3.8-flash";
   const response = await fetch(
@@ -161,8 +216,10 @@ async function callGemini(apiKey: string, prompt: string, schema: any) {
 }
 
 async function callProvider(
-  provider: "anthropic" | "gemini",
+  provider: "anthropic" | "gemini" | "xai",
   apiKey: string,
+  model: string,
+  reasoning: string,
   prompt: string,
   schemaName: string,
   schema: any
@@ -170,28 +227,46 @@ async function callProvider(
   if (provider === "anthropic") {
     return callAnthropic(apiKey, prompt, schemaName, schema);
   }
+  if (provider === "xai") {
+    return callXai(apiKey, model, reasoning, prompt, schemaName, schema);
+  }
   return callGemini(apiKey, prompt, schema);
 }
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const provider = String(body.provider || "") as "anthropic" | "gemini";
+    const provider = String(body.provider || "") as "anthropic" | "gemini" | "xai";
     const apiKey = String(body.apiKey || "").trim();
+    const model = String(body.model || "").trim();
+    const reasoning = String(body.reasoning || "default").trim().toLowerCase();
     const repo = String(body.repo || "").trim();
     const branch = String(body.branch || "main").trim();
     const githubToken = String(body.githubToken || "").trim();
     const prompt = String(body.prompt || "").trim();
     const projectContext = String(body.projectContext || "").slice(0, 20000);
 
-    if (!["anthropic","gemini"].includes(provider)) {
+    if (!["anthropic","gemini","xai"].includes(provider)) {
       return NextResponse.json({ error: "Provider chưa được hỗ trợ." }, { status: 400 });
     }
     if (!apiKey) {
       return NextResponse.json(
-        { error: provider === "anthropic" ? "Chưa có Anthropic API key." : "Chưa có Gemini API key." },
+        {
+          error:
+            provider === "anthropic"
+              ? "Chưa có Anthropic API key."
+              : provider === "xai"
+                ? "Chưa có xAI API key."
+                : "Chưa có Gemini API key."
+        },
         { status: 401 }
       );
+    }
+    if (provider === "xai" && model && !/^[A-Za-z0-9._:-]+$/.test(model)) {
+      return NextResponse.json({ error: "Tên model Grok không hợp lệ." }, { status: 400 });
+    }
+    if (provider === "xai" && !["default","none","low","medium","high","xhigh"].includes(reasoning)) {
+      return NextResponse.json({ error: "Reasoning Grok không hợp lệ." }, { status: 400 });
     }
     if (!validRepo(repo) || !branch || !prompt) {
       return NextResponse.json({ error: "Thiếu repo, branch hoặc prompt." }, { status: 400 });
@@ -228,7 +303,15 @@ export async function POST(request: NextRequest) {
       paths.join("\n")
     ].join("\n");
 
-    const plan = await callProvider(provider, apiKey, planPrompt, "vibaocode_project_plan", planSchema);
+    const plan = await callProvider(
+      provider,
+      apiKey,
+      provider === "xai" ? (model || "grok-4.7") : "",
+      provider === "xai" ? reasoning : "default",
+      planPrompt,
+      "vibaocode_project_plan",
+      planSchema
+    );
     const selectedPaths: string[] = Array.from(
       new Set<string>(
         (Array.isArray(plan.files) ? plan.files : [])
@@ -274,7 +357,15 @@ export async function POST(request: NextRequest) {
       bundle
     ].join("\n\n");
 
-    const edits = await callProvider(provider, apiKey, editPrompt, "vibaocode_project_edit", editSchema);
+    const edits = await callProvider(
+      provider,
+      apiKey,
+      provider === "xai" ? (model || "grok-4.7") : "",
+      provider === "xai" ? reasoning : "default",
+      editPrompt,
+      "vibaocode_project_edit",
+      editSchema
+    );
     const originalByPath = new Map(originals.map(file => [file.path, file]));
     const files = (Array.isArray(edits.files) ? edits.files : [])
       .map((file: any) => ({
@@ -298,7 +389,12 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({
-      model: provider === "anthropic" ? "claude-sonnet-4-6" : "gemini-3.8-flash",
+      model:
+        provider === "anthropic"
+          ? "claude-sonnet-4-6"
+          : provider === "xai"
+            ? (model || "grok-4.7")
+            : "gemini-3.8-flash",
       provider,
       plan: String(plan.plan || ""),
       summary: String(edits.summary || ""),
