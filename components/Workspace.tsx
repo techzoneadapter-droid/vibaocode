@@ -2990,8 +2990,10 @@ export default function Workspace() {
             <div className="ai-drawer-scroll">
               <div className="provider-row">
                 <span className="provider-chip">
-                  {aiProvider === "codex-account"
-                    ? (codexModels.find((item) => item.model === codexModel)?.displayName || codexModel || "ChatGPT / Codex")
+                  {aiProvider === "openai-codex-hybrid"
+                    ? `${openAIModels.find((item) => item.id === model)?.label || model} → ${codexModels.find((item) => item.model === codexModel)?.displayName || codexModel || "Codex"}`
+                    : aiProvider === "codex-account"
+                      ? (codexModels.find((item) => item.model === codexModel)?.displayName || codexModel || "ChatGPT / Codex")
                     : aiProvider === "claude-api"
                       ? "Claude Sonnet 4.6"
                       : aiProvider === "gemini-api"
@@ -3005,7 +3007,7 @@ export default function Workspace() {
                 </button>
               </div>
 
-              {aiProvider === "codex-account" && codexStatus === "connected" ? (
+              {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") && codexStatus === "connected" ? (
                 <div className="codex-model-card">
                   <div className="codex-model-card-head">
                     <span className="eyebrow">CODEX MODEL</span>
@@ -3049,6 +3051,46 @@ export default function Workspace() {
                 </div>
               ) : null}
 
+              {(aiProvider === "openai-api" || aiProvider === "openai-codex-hybrid") ? (
+                <div className="codex-model-card">
+                  <div className="codex-model-card-head">
+                    <span className="eyebrow">{aiProvider === "openai-codex-hybrid" ? "CHATGPT DIRECTOR" : "CHATGPT / OPENAI MODEL"}</span>
+                    <button className="text-button" onClick={() => loadOpenAIModels(true)} disabled={openAIModelsLoading} type="button">
+                      {openAIModelsLoading ? <Loader2 className="spin" size={11} /> : <RefreshCw size={11} />}
+                      Làm mới
+                    </button>
+                  </div>
+                  <label>
+                    Model
+                    <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
+                      {openAIModels.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select value={openAIReasoning} onChange={(e) => setOpenAIReasoning(e.target.value)}>
+                      {(() => {
+                        const selected = openAIModels.find((item) => item.id === model);
+                        const efforts = selected?.reasoning || [];
+                        if (!efforts.length) return <option value="high">high</option>;
+                        return efforts.map((effort) => (
+                          <option key={effort} value={effort}>{effort}</option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                  <small className="usage-token-note">
+                    {aiProvider === "openai-codex-hybrid"
+                      ? "ChatGPT phân tích/lập kế hoạch, sau đó Codex thực thi trong Sandbox."
+                      : "Model được tải từ OpenAI API theo API key của bạn."}
+                  </small>
+                </div>
+              ) : null}
+
               {aiProvider === "xai-api" ? (
                 <div className="codex-model-card">
                   <div className="codex-model-card-head">
@@ -3087,7 +3129,7 @@ export default function Workspace() {
                 </div>
               ) : null}
 
-              {aiProvider === "codex-account" && codexStatus === "connected" ? (
+              {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") && codexStatus === "connected" ? (
                 <div className="ai-usage-card">
                   <div className="ai-usage-head">
                     <span className="eyebrow">AI USAGE</span>
