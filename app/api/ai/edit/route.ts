@@ -40,9 +40,10 @@ export async function POST(request: NextRequest) {
   const projectContext = String(body.projectContext || "").slice(0, 20000);
   const sessionKey = String(body.apiKey || "").trim();
   const requestedModel = String(body.model || "").trim();
+  const reasoning = String(body.reasoning || "default").trim().toLowerCase();
 
-  if (provider !== "openai") {
-    return NextResponse.json({ error: "V1 hiện hỗ trợ OpenAI trước." }, { status: 400 });
+  if (!["openai","xai"].includes(provider)) {
+    return NextResponse.json({ error: "Provider chưa được hỗ trợ cho File mode." }, { status: 400 });
   }
 
   if (!prompt || !filePath) {
@@ -56,23 +57,41 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const apiKey = sessionKey || process.env.OPENAI_API_KEY || "";
+  const apiKey =
+    sessionKey ||
+    (provider === "xai" ? process.env.XAI_API_KEY || "" : process.env.OPENAI_API_KEY || "");
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Chưa có OpenAI API key. Thêm key trong Settings hoặc biến môi trường OPENAI_API_KEY." },
+      {
+        error:
+          provider === "xai"
+            ? "Chưa có xAI API key."
+            : "Chưa có OpenAI API key. Thêm key trong Settings hoặc biến môi trường OPENAI_API_KEY."
+      },
       { status: 401 }
     );
   }
 
-  const allowedModels = new Set([
-    "gpt-5.3-codex",
-    "gpt-5.6-luna",
-    "gpt-5.6-terra",
-    "gpt-5.6-sol",
-    "gpt-6-astra",
-  ]);
-  const configuredModel = requestedModel || process.env.OPENAI_MODEL || "gpt-5.3-codex";
-  const model = allowedModels.has(configuredModel) ? configuredModel : "gpt-5.3-codex";
+  let model = requestedModel;
+  if (provider === "openai") {
+    const allowedModels = new Set([
+      "gpt-5.3-codex",
+      "gpt-5.6-luna",
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+      "gpt-6-astra",
+    ]);
+    const configuredModel = requestedModel || process.env.OPENAI_MODEL || "gpt-5.3-codex";
+    model = allowedModels.has(configuredModel) ? configuredModel : "gpt-5.3-codex";
+  } else {
+    model = requestedModel || "grok-4.7";
+    if (!/^[A-Za-z0-9._:-]+$/.test(model)) {
+      return NextResponse.json({ error: "Tên model Grok không hợp lệ." }, { status: 400 });
+    }
+    if (!["default","none","low","medium","high","xhigh"].includes(reasoning)) {
+      return NextResponse.json({ error: "Reasoning Grok không hợp lệ." }, { status: 400 });
+    }
+  }
   const instructions = [
     "You are Vibaocode's coding agent.",
     "Edit only the selected file unless the user explicitly asks for a replacement file.",
@@ -91,32 +110,40 @@ export async function POST(request: NextRequest) {
     prompt,
   ].join("\n\n");
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      instructions,
-      input,
-      max_output_tokens: 16000,
-      text: {
-        format: {
-          type: "json_schema",
-          name: "vibaocode_file_edit",
-          strict: true,
-          schema,
-        },
+  const requestBody: any = {
+    model,
+    instructions,
+    input,
+    max_output_tokens: 16000,
+    text: {
+      format: {
+        type: "json_schema",
+        name: "vibaocode_file_edit",
+        strict: true,
+        schema,
       },
-    }),
-  });
+    },
+  };
+  if (provider === "xai" && reasoning && reasoning !== "default") {
+    requestBody.reasoning = { effort: reasoning };
+  }
+
+  const response = await fetch(
+    provider === "xai" ? "https://api.x.ai/v1/responses" : "https://api.openai.com/v1/responses",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    },
+  );
 
   const data = await response.json();
   if (!response.ok) {
     return NextResponse.json(
-      { error: data?.error?.message || "OpenAI request failed." },
+      { error: data?.error?.message || (provider === "xai" ? "xAI request failed." : "OpenAI request failed.") },
       { status: response.status }
     );
   }
