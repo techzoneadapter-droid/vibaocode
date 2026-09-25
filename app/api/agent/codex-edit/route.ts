@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   compactWorkspace,
+  checkpointWorkspaceChanges,
   ensurePublicRepo,
   ensureCodexCli,
   getWorkspaceSandbox,
@@ -633,6 +634,26 @@ export async function POST(request: NextRequest) {
       });
 
       const finalProgress = await readProgress(sandbox, progressPath);
+
+      // Always create a local git checkpoint before any optional push. This
+      // protects completed Codex work when GitHub auth is missing, expires, or
+      // the user swaps Codex accounts before pushing.
+      let localCheckpoint: Record<string, unknown> | null = null;
+      try {
+        localCheckpoint = await checkpointWorkspaceChanges(
+          sandbox,
+          dir,
+          checks.passed
+            ? "checkpoint: preserve completed AI changes"
+            : "checkpoint: preserve AI changes before review",
+        ) as unknown as Record<string, unknown>;
+      } catch (error) {
+        localCheckpoint = {
+          committed: false,
+          error: error instanceof Error ? error.message : "Local checkpoint failed.",
+        };
+      }
+
       let autoPushResult: Record<string, unknown> | null = null;
 
       if (autoPush && githubToken && branch === "main" && checks.passed) {
@@ -682,6 +703,7 @@ export async function POST(request: NextRequest) {
         codexLog: stderr.stdout.slice(-12000),
         usage: usageFromEvents(events.stdout),
         progress: finalProgress,
+        localCheckpoint,
         autoPushResult,
         sandboxMode: "vercel-isolated + async-codex + latest-codex + ignore-user-config + danger-full-access",
         selectedModel: requestedModel || null,
