@@ -149,6 +149,24 @@ type CodexUsageSnapshot = {
   error?: string;
 };
 
+type OpenAIModelOption = {
+  id: string;
+  label?: string;
+  reasoning?: string[];
+  recommended?: boolean;
+  created?: number | null;
+};
+
+const OPENAI_FALLBACK_MODELS: OpenAIModelOption[] = [
+  { id: "gpt-6-astra", label: "GPT-6 Astra — mạnh nhất", reasoning: ["low","medium","high","xhigh","max"], recommended: true },
+  { id: "gpt-6-sol", label: "GPT-6 Sol — mạnh/cân bằng", reasoning: ["low","medium","high","xhigh","max"] },
+  { id: "gpt-6-luna", label: "GPT-6 Luna — nhanh/tiết kiệm", reasoning: ["none","low","medium","high","xhigh","max"] },
+  { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", reasoning: ["low","medium","high","xhigh"] },
+  { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", reasoning: ["low","medium","high"] },
+  { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", reasoning: ["none","low","medium","high"] },
+  { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", reasoning: ["low","medium","high"] },
+];
+
 type XaiModelOption = {
   id: string;
   label?: string;
@@ -325,8 +343,11 @@ export default function Workspace() {
   const [githubRepos, setGithubRepos] = useState<GithubRepoOption[]>([]);
   const [githubConnecting, setGithubConnecting] = useState(false);
   const [openAIKey, setOpenAIKey] = useState("");
-  const [model, setModel] = useState("gpt-5.3-codex");
-  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "claude-api" | "gemini-api" | "xai-api">("openai-api");
+  const [model, setModel] = useState("gpt-6-astra");
+  const [openAIModels, setOpenAIModels] = useState<OpenAIModelOption[]>(OPENAI_FALLBACK_MODELS);
+  const [openAIModelsLoading, setOpenAIModelsLoading] = useState(false);
+  const [openAIReasoning, setOpenAIReasoning] = useState("high");
+  const [aiProvider, setAiProvider] = useState<"openai-api" | "codex-account" | "openai-codex-hybrid" | "claude-api" | "gemini-api" | "xai-api">("openai-api");
   const [anthropicKey, setAnthropicKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
   const [xaiKey, setXaiKey] = useState("");
@@ -454,9 +475,10 @@ export default function Workspace() {
       }
       if (data.openAIKey) setOpenAIKey(data.openAIKey);
       if (data.model) setModel(data.model);
+      if (data.openAIReasoning) setOpenAIReasoning(data.openAIReasoning);
       if (data.codexModel) setCodexModel(data.codexModel);
       if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
-      if (["codex-account","openai-api","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
+      if (["codex-account","openai-api","openai-codex-hybrid","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
@@ -624,7 +646,7 @@ export default function Workspace() {
   const saveSettings = () => {
     sessionStorage.setItem(
       "vibaocode.settings",
-      JSON.stringify({ repo, branch, githubToken, openAIKey, model, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, xaiKey, xaiModel, xaiReasoning, autoSync, previewUrl })
+      JSON.stringify({ repo, branch, githubToken, openAIKey, model, openAIReasoning, codexModel, codexReasoning, aiProvider, anthropicKey, geminiKey, xaiKey, xaiModel, xaiReasoning, autoSync, previewUrl })
     );
     localStorage.setItem("vibaocode.project", JSON.stringify({ repo, branch }));
     setSettingsOpen(false);
@@ -1318,6 +1340,62 @@ export default function Workspace() {
     }
   }
 
+  async function loadOpenAIModels(announce = false) {
+    setOpenAIModelsLoading(true);
+    try {
+      const response = await fetch("/api/ai/openai-models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: openAIKey }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Không đọc được danh sách model OpenAI.");
+
+      const models: OpenAIModelOption[] = Array.isArray(data.models) && data.models.length
+        ? data.models
+        : OPENAI_FALLBACK_MODELS;
+      setOpenAIModels(models);
+
+      const current = models.find((item) => item.id === model);
+      const selected =
+        current ||
+        models.find((item) => item.id === data.recommended) ||
+        models.find((item) => item.recommended) ||
+        models[0];
+
+      if (selected && !current) setModel(selected.id);
+      const efforts = selected?.reasoning || [];
+      if (efforts.length && !efforts.includes(openAIReasoning)) {
+        setOpenAIReasoning(
+          efforts.includes("high") ? "high" : efforts.includes("medium") ? "medium" : efforts[0],
+        );
+      }
+
+      if (announce) {
+        setNotice(
+          data.connected
+            ? `Đã kết nối OpenAI API • ${models.length} model chat khả dụng`
+            : `Đã tải ${models.length} model mẫu • thêm API key để đọc model tài khoản`,
+        );
+      }
+    } catch (err) {
+      if (announce) setError(err instanceof Error ? err.message : "Không đọc được model OpenAI.");
+    } finally {
+      setOpenAIModelsLoading(false);
+    }
+  }
+
+  function chooseOpenAIModel(nextModel: string) {
+    setModel(nextModel);
+    const selected = openAIModels.find((item) => item.id === nextModel);
+    const efforts = selected?.reasoning || [];
+    if (efforts.length && !efforts.includes(openAIReasoning)) {
+      setOpenAIReasoning(
+        efforts.includes("high") ? "high" : efforts.includes("medium") ? "medium" : efforts[0],
+      );
+    }
+  }
+
   async function loadXaiModels(announce = false) {
     setXaiModelsLoading(true);
     try {
@@ -1558,7 +1636,7 @@ export default function Workspace() {
           provider: aiProvider === "xai-api" ? "xai" : "openai",
           apiKey: aiProvider === "xai-api" ? xaiKey : openAIKey,
           model: aiProvider === "xai-api" ? xaiModel : model,
-          reasoning: aiProvider === "xai-api" ? xaiReasoning : undefined,
+          reasoning: aiProvider === "xai-api" ? xaiReasoning : openAIReasoning,
           prompt,
           filePath: selected.path,
           content: editorContent,
