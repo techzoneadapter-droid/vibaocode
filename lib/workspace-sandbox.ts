@@ -264,8 +264,7 @@ export async function ensurePublicRepo(
       [
         `cd ${JSON.stringify(dir)}`,
         `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
-        `GIT_TERMINAL_PROMPT=0 git fetch origin ${JSON.stringify(branch)} --depth=1`,
-        `git reset --hard origin/${JSON.stringify(branch)}`,
+        `GIT_TERMINAL_PROMPT=0 git fetch origin ${JSON.stringify(branch)} --depth=100`,
       ].join(" && "),
     );
   }
@@ -277,8 +276,7 @@ export async function ensurePublicRepo(
       [
         `cd ${JSON.stringify(dir)}`,
         `git remote set-url origin ${JSON.stringify(remoteUrl)}`,
-        `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=1`,
-        `git reset --hard origin/${JSON.stringify(branch)}`,
+        `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=100`,
       ].join(" && "),
     );
   }
@@ -318,27 +316,123 @@ export async function ensurePublicRepo(
       );
     }
   } else {
-    const trackedDirty = await shell(
+    // Always refresh the remote tracking ref, but never destroy local work merely
+    // because the UI requested a "force remote" preview refresh. Codex can finish
+    // with valuable edits while GitHub auth is missing or quota expires; a hard
+    // reset here used to silently erase that working tree on reload/account swap.
+    let sync = await anonymousFetch();
+
+    if (sync.exitCode !== 0 && authHeader) {
+      sync = (await authenticatedFetch()) || sync;
+    }
+
+    if (sync.exitCode !== 0) {
+      throw new Error(
+        `Không đồng bộ được repository trong Cloud Sandbox.\n${(sync.stderr || sync.stdout).slice(-1800)}`,
+      );
+    }
+
+    const meaningfulStatus = await shell(
       sandbox,
-      `cd ${JSON.stringify(dir)} && git diff --quiet HEAD -- || echo dirty`,
+      [
+        `cd ${JSON.stringify(dir)}`,
+        "git status --porcelain --untracked-files=all",
+        "| grep -vE '^(.. )?(\\.vibaocode-|node_modules/|dist/)' || true",
+      ].join(" && "),
+    );
+    const localHead = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git rev-parse HEAD`,
+    );
+    const remoteHead = await shell(
+      sandbox,
+      `cd ${JSON.stringify(dir)} && git rev-parse origin/${JSON.stringify(branch)}`,
     );
 
-    if (options.forceRemote || !trackedDirty.stdout.trim()) {
-      let sync = await anonymousFetch();
+    const localSha = localHead.stdout.trim();
+    const remoteSha = remoteHead.stdout.trim();
+    const localContainsRemote =
+      localSha && remoteSha
+        ? await shell(
+            sandbox,
+            `cd ${JSON.stringify(dir)} && git merge-base --is-ancestor origin/${JSON.stringify(branch)} HEAD`,
+          )
+        : null;
 
-      if (sync.exitCode !== 0 && authHeader) {
-        sync = (await authenticatedFetch()) || sync;
-      }
+    const hasLocalSourceChanges = Boolean(meaningfulStatus.stdout.trim());
+    const hasUnpushedLocalCommit =
+      Boolean(localSha && remoteSha && localSha !== remoteSha && localContainsRemote?.exitCode === 0);
 
-      if (sync.exitCode !== 0) {
+    if (!hasLocalSourceChanges && !hasUnpushedLocalCommit && localSha !== remoteSha) {
+      const reset = await shell(
+        sandbox,
+        `cd ${JSON.stringify(dir)} && git reset --hard origin/${JSON.stringify(branch)}`,
+      );
+      if (reset.exitCode !== 0) {
         throw new Error(
-          `Không đồng bộ được repository trong Cloud Sandbox.\n${(sync.stderr || sync.stdout).slice(-1800)}`,
+          `Không cập nhật được workspace về origin/${branch}.\n${(reset.stderr || reset.stdout).slice(-1800)}`,
         );
       }
     }
   }
 
   return dir;
+}
+
+export async function checkpointWorkspaceChanges(
+  sandbox: Sandbox,
+  dir: string,
+  message = "checkpoint: preserve current Sandbox changes",
+) {
+  const statusBefore = await shell(
+    sandbox,
+    `cd ${JSON.stringify(dir)} && git status --porcelain --untracked-files=all`,
+  );
+  if (!statusBefore.stdout.trim()) {
+    const head = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+    return { committed: false, sha: head.stdout.trim(), files: [] as string[] };
+  }
+
+  const stage = await shell(
+    sandbox,
+    [
+      `cd ${JSON.stringify(dir)}`,
+      "git add -u",
+      "git add -A -- src public scripts tests .github index.html package.json package-lock.json tsconfig.json vite.config.ts README.md PROJECT.md VISUAL_SYSTEM.md .gitignore 2>/dev/null || true",
+      "git reset -- .vibaocode-* .vibaocode-references node_modules dist 2>/dev/null || true",
+    ].join(" && "),
+  );
+  if (stage.exitCode !== 0) {
+    throw new Error(
+      `Không stage được source changes để tạo checkpoint.\n${(stage.stderr || stage.stdout || "").slice(-1800)}`,
+    );
+  }
+
+  const staged = await shell(
+    sandbox,
+    `cd ${JSON.stringify(dir)} && git diff --cached --name-only`,
+  );
+  const files = staged.stdout.split("\n").map((item) => item.trim()).filter(Boolean);
+  if (!files.length) {
+    const head = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+    return { committed: false, sha: head.stdout.trim(), files };
+  }
+
+  const commit = await shell(
+    sandbox,
+    [
+      `cd ${JSON.stringify(dir)}`,
+      `git -c user.name=${JSON.stringify("Vibaocode")} -c user.email=${JSON.stringify("vibaocode@local")} commit -m ${JSON.stringify(message)}`,
+    ].join(" && "),
+  );
+  if (commit.exitCode !== 0) {
+    throw new Error(
+      `Không tạo được local checkpoint.\n${(commit.stderr || commit.stdout || "").slice(-1800)}`,
+    );
+  }
+
+  const head = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
+  return { committed: true, sha: head.stdout.trim(), files };
 }
 
 export async function pushWorkspaceHead(
@@ -352,43 +446,10 @@ export async function pushWorkspaceHead(
 
   const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
 
-  // Push Sandbox should preserve the CURRENT source tree, not only the last local commit.
-  // Stage a conservative whitelist of legitimate project files and auto-create a checkpoint
-  // when Codex/AI stopped before committing (e.g. quota exhausted). Runtime .vibaocode-* files
-  // and generated junk are intentionally excluded.
-  const statusBefore = await shell(sandbox, `cd ${JSON.stringify(dir)} && git status --porcelain`);
-  let autoCommitted = false;
-  let autoCommitSha = "";
-  if (statusBefore.stdout.trim()) {
-    const stage = await shell(
-      sandbox,
-      [
-        `cd ${JSON.stringify(dir)}`,
-        "git add -A -- src public index.html package.json package-lock.json tsconfig.json vite.config.ts README.md PROJECT.md .gitignore 2>/dev/null || true",
-        "git reset -- .vibaocode-* .vibaocode-references 2>/dev/null || true",
-      ].join(" && "),
-    );
-    if (stage.exitCode !== 0) {
-      throw new Error(`Không stage được source changes trước khi push.\n${(stage.stderr || stage.stdout || "").slice(-1800)}`);
-    }
-
-    const staged = await shell(sandbox, `cd ${JSON.stringify(dir)} && git diff --cached --name-only`);
-    if (staged.stdout.trim()) {
-      const commit = await shell(
-        sandbox,
-        [
-          `cd ${JSON.stringify(dir)}`,
-          `git -c user.name=${JSON.stringify("Vibaocode")} -c user.email=${JSON.stringify("vibaocode@local")} commit -m ${JSON.stringify("checkpoint: preserve current Sandbox changes")}`,
-        ].join(" && "),
-      );
-      if (commit.exitCode !== 0) {
-        throw new Error(`Không commit được source changes trước khi push.\n${(commit.stderr || commit.stdout || "").slice(-1800)}`);
-      }
-      autoCommitted = true;
-      const committed = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
-      autoCommitSha = committed.stdout.trim();
-    }
-  }
+  // Preserve the current source tree before any fetch/rebase/push.
+  const checkpoint = await checkpointWorkspaceChanges(sandbox, dir);
+  const autoCommitted = checkpoint.committed;
+  const autoCommitSha = checkpoint.committed ? checkpoint.sha : "";
 
   const current = await shell(sandbox, `cd ${JSON.stringify(dir)} && git rev-parse HEAD`);
   const originalLocalSha = current.stdout.trim();
