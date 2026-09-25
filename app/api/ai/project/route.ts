@@ -85,27 +85,38 @@ function extractOutputText(data: any): string {
   return "";
 }
 
-async function callModel(apiKey: string, model: string, instructions: string, input: string, schemaName: string, schema: any) {
+async function callModel(
+  apiKey: string,
+  model: string,
+  reasoning: string,
+  instructions: string,
+  input: string,
+  schemaName: string,
+  schema: any,
+) {
+  const body: any = {
+    model,
+    instructions,
+    input,
+    max_output_tokens: 24000,
+    text: {
+      format: {
+        type: "json_schema",
+        name: schemaName,
+        strict: true,
+        schema
+      }
+    }
+  };
+  if (reasoning && reasoning !== "none") body.reasoning = { effort: reasoning };
+
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model,
-      instructions,
-      input,
-      max_output_tokens: 24000,
-      text: {
-        format: {
-          type: "json_schema",
-          name: schemaName,
-          strict: true,
-          schema
-        }
-      }
-    })
+    body: JSON.stringify(body)
   });
 
   const data = await response.json();
@@ -146,6 +157,7 @@ export async function POST(request: NextRequest) {
     const projectContext = String(body.projectContext || "").slice(0, 20000);
     const sessionKey = String(body.apiKey || "").trim();
     const requestedModel = String(body.model || "").trim();
+    const reasoning = String(body.reasoning || "high").trim().toLowerCase();
 
     if (!validRepo(repo) || !branch || !prompt) {
       return NextResponse.json({ error: "Thiếu repo, branch hoặc yêu cầu dự án." }, { status: 400 });
@@ -159,15 +171,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const allowedModels = new Set([
-      "gpt-5.3-codex",
-      "gpt-5.6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-sol",
-      "gpt-6-astra"
-    ]);
-    const configuredModel = requestedModel || process.env.OPENAI_MODEL || "gpt-5.3-codex";
-    const model = allowedModels.has(configuredModel) ? configuredModel : "gpt-5.3-codex";
+    const model = requestedModel || process.env.OPENAI_MODEL || "gpt-6-astra";
+    if (!/^[A-Za-z0-9._:-]+$/.test(model)) {
+      return NextResponse.json({ error: "Tên model OpenAI không hợp lệ." }, { status: 400 });
+    }
+    if (!["none","low","medium","high","xhigh","max"].includes(reasoning)) {
+      return NextResponse.json({ error: "Reasoning OpenAI không hợp lệ." }, { status: 400 });
+    }
 
     const treeUrl = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
     const treeResponse = await fetch(treeUrl, { headers: ghHeaders(githubToken), cache: "no-store" });
@@ -193,6 +203,7 @@ export async function POST(request: NextRequest) {
     const plan = await callModel(
       apiKey,
       model,
+      reasoning,
       [
         "You are the planning agent for Vibaocode.",
         "The user may not know which files implement their request.",
@@ -244,6 +255,7 @@ export async function POST(request: NextRequest) {
     const edits = await callModel(
       apiKey,
       model,
+      reasoning,
       [
         "You are Vibaocode's project coding agent.",
         "Implement the user's request using only the provided files.",
