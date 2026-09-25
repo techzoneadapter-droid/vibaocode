@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
         recommended: String(item.id) === "gpt-6-astra",
         created: Number(item.created || 0) || null,
       }))
-      .sort((a, b) => {
+      .sort((a: ModelOption, b: ModelOption) => {
         if (a.id === "gpt-6-astra") return -1;
         if (b.id === "gpt-6-astra") return 1;
         if (a.id === "gpt-6-sol") return -1;
