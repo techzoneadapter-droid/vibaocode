@@ -74,15 +74,13 @@ export async function POST(request: NextRequest) {
 
   let model = requestedModel;
   if (provider === "openai") {
-    const allowedModels = new Set([
-      "gpt-5.3-codex",
-      "gpt-5.6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-sol",
-      "gpt-6-astra",
-    ]);
-    const configuredModel = requestedModel || process.env.OPENAI_MODEL || "gpt-5.3-codex";
-    model = allowedModels.has(configuredModel) ? configuredModel : "gpt-5.3-codex";
+    model = requestedModel || process.env.OPENAI_MODEL || "gpt-6-astra";
+    if (!/^[A-Za-z0-9._:-]+$/.test(model)) {
+      return NextResponse.json({ error: "Tên model OpenAI không hợp lệ." }, { status: 400 });
+    }
+    if (!["none","low","medium","high","xhigh","max","default"].includes(reasoning)) {
+      return NextResponse.json({ error: "Reasoning OpenAI không hợp lệ." }, { status: 400 });
+    }
   } else {
     model = requestedModel || "grok-4.7";
     if (!/^[A-Za-z0-9._:-]+$/.test(model)) {
@@ -124,7 +122,7 @@ export async function POST(request: NextRequest) {
       },
     },
   };
-  if (provider === "xai" && reasoning && reasoning !== "default") {
+  if (reasoning && reasoning !== "default" && reasoning !== "none") {
     requestBody.reasoning = { effort: reasoning };
   }
 
