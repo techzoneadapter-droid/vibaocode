@@ -831,13 +831,21 @@ export async function POST(request: NextRequest) {
       detail: "Agent chạy nền trong persistent Cloud Sandbox; yêu cầu lớn không còn bị giới hạn bởi HTTP request.",
     });
 
+    const primaryCodexExec =
+      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} ${imageArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`;
+    const fallbackCodexExec =
+      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} --json - > .vibaocode-codex-events.jsonl 2>> .vibaocode-codex-stderr.log`;
+
     const innerCommand = [
       "set +e",
       `cd ${JSON.stringify(ensuredDir)} || exit 97`,
       `printf "%s" "$BASHPID" > ${JSON.stringify(actualPidPath)}`,
       `trap 'CODE=$?; printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}' EXIT`,
-      `cat .vibaocode-codex-prompt.txt | ${codexCommand} exec --ignore-user-config --dangerously-bypass-approvals-and-sandbox --cd ${JSON.stringify(ensuredDir)} ${modelArgs} ${imageArgs} --json - > .vibaocode-codex-events.jsonl 2> .vibaocode-codex-stderr.log`,
+      primaryCodexExec,
       "CODE=$?",
+      imageArgs
+        ? `if [ "$CODE" -ne 0 ] && [ ! -s .vibaocode-codex-events.jsonl ]; then printf "\\n[vibaocode] vision launch failed before events; retrying with local reference files only.\\n" >> .vibaocode-codex-stderr.log; ${fallbackCodexExec}; CODE=$?; fi`
+        : "true",
       `printf "%s" "$CODE" > ${JSON.stringify(actualExitPath)}`,
       "exit $CODE",
     ].join("; ");
