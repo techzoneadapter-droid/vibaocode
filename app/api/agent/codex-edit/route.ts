@@ -731,24 +731,41 @@ export async function POST(request: NextRequest) {
         ? `--config ${JSON.stringify(`model_reasoning_effort="${requestedReasoning}"`)}`
         : "",
     ].filter(Boolean).join(" ");
-    const imageArgs = referenceImages
+    // Sending many large reference images to Codex vision in one turn can make
+    // the CLI/provider reject the request before the agent starts. Keep every
+    // original image in the Sandbox for programmatic access, but attach only a
+    // representative vision subset when the reference set is large.
+    const selectVisionReferences = (items: typeof referenceImages) => {
+      if (items.length <= 4) return items;
+      const indices = [0, Math.floor(items.length / 2), items.length - 2, items.length - 1];
+      return indices
+        .filter((value, index, all) => value >= 0 && all.indexOf(value) === index)
+        .map((index) => items[index])
+        .filter(Boolean);
+    };
+    const visionReferences = selectVisionReferences(referenceImages);
+    const imageArgs = visionReferences
       .map((item: any) => `--image ${JSON.stringify(`${ensuredDir}/${item.path}`)}`)
       .join(" ");
     const referenceContext = referenceImages.length
       ? [
           "",
-          "REFERENCE IMAGES ATTACHED TO THIS TURN:",
+          "REFERENCE FILES AVAILABLE IN THE LOCAL SANDBOX:",
           ...referenceImages.map(
             (item: any) =>
               `${item.refId} | title=${item.title} | role=${item.kind} | file=${item.name} | local_path=${item.path}${item.note ? ` | use=${item.note}` : ""}`,
           ),
+          `VISION SUBSET ATTACHED DIRECTLY: ${visionReferences.map((item: any) => item.refId).join(", ") || "none"}`,
           "REFERENCE RULES:",
+          "- Every listed reference file exists locally in the repository Sandbox even when it is not in the direct vision subset.",
+          "- Use shell/Python/image-processing tools to inspect, crop, measure, or extract any local reference file that is not directly attached to vision.",
           "- Treat each image as an explicitly scoped reference, not as a global style blend.",
           "- Follow each reference note/use instruction literally when deciding which visual element it controls.",
           "- If references conflict, prefer the image whose role/note explicitly matches the current component or screen.",
           "- Do not borrow layout from an asset-sheet reference unless its note says to do so.",
           "- Do not borrow puzzle styling from Home/City references unless explicitly instructed.",
-          "Inspect the active images before making visual decisions.",
+          "- Do not fail merely because not every local reference was attached to vision; the originals remain available on disk.",
+          "Inspect the relevant references before making visual decisions.",
         ]
       : [];
 
@@ -875,6 +892,7 @@ export async function POST(request: NextRequest) {
         model: requestedModel || "Codex default",
         reasoning: requestedReasoning || "default",
         referenceImages: referenceImages.length,
+        visionImages: visionReferences.length,
         version: codex.version,
         sessionBudget,
         progress: await readProgress(sandbox, progressPath),
