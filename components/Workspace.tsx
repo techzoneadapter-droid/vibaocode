@@ -714,16 +714,32 @@ export default function Workspace() {
         throw new Error(data.error || data.message || "Không dọn được Sandbox.");
       }
 
+      const keptSandboxName = String(data.keptSandboxName || "");
+      const keptSnapshotId = String(data.keptSnapshotId || "");
       setSandboxCleanupResult(
-        `Đã xóa ${data.deletedSandboxes || 0} Sandbox và ${data.deletedSnapshots || 0} Snapshot cũ.`
+        [
+          `Đã xóa ${data.deletedSandboxes || 0} Sandbox cũ và ${data.deletedSnapshots || 0} Snapshot cũ.`,
+          keptSandboxName ? `Giữ lại Sandbox mới nhất: ${keptSandboxName}.` : "",
+          keptSnapshotId ? "Giữ lại Snapshot mới nhất." : "",
+        ].filter(Boolean).join(" ")
       );
       setVercelCleanupToken("");
-      setSandboxRunning(false);
-      setSandboxName("");
-      setPreviewUrl("");
-      setCodexStatus("disconnected");
-      setCodexDetail("");
-      setNotice("Đã dọn quota Sandbox. Bấm Run hoặc Kết nối ChatGPT lại.");
+
+      // Chỉ reset preview nếu Sandbox mà UI đang trỏ tới vừa bị xóa.
+      // Nếu nó chính là Sandbox mới nhất được giữ lại thì giữ nguyên trạng thái.
+      if (sandboxName && keptSandboxName && sandboxName !== keptSandboxName) {
+        setSandboxRunning(false);
+        setSandboxName("");
+        setPreviewUrl("");
+        setCodexStatus("disconnected");
+        setCodexDetail("");
+      }
+
+      setNotice(
+        keptSandboxName
+          ? `Đã dọn Sandbox cũ • giữ lại ${keptSandboxName}`
+          : "Không có Sandbox Vibaocode cũ cần xóa."
+      );
     } catch (err) {
       setSandboxCleanupResult("");
       setError(err instanceof Error ? err.message : "Dọn Sandbox thất bại.");
@@ -4056,8 +4072,8 @@ export default function Workspace() {
             <div className="settings-group">
               <div className="settings-title"><Trash2 size={17} /><strong>Dọn Vercel Sandbox</strong></div>
               <p className="settings-hint">
-                Dùng khi Vercel báo lỗi 402 Snapshot Storage. Vibaocode chỉ xóa Sandbox có tên bắt đầu bằng
-                <strong> vibaocode-</strong> và Snapshot thuộc chính project hiện tại.
+                Dùng khi Vercel báo lỗi 402 Snapshot Storage. Vibaocode chỉ xóa <strong>Sandbox/Snapshot cũ</strong>,
+                luôn giữ lại <strong>Sandbox mới nhất</strong> và <strong>Snapshot mới nhất</strong> của project hiện tại.
               </p>
               <label>
                 Vercel token tạm thời <span>(để trống trước; Vibaocode sẽ thử OIDC của deployment)</span>
@@ -4076,7 +4092,7 @@ export default function Workspace() {
                 type="button"
               >
                 {sandboxCleanupLoading ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
-                {sandboxCleanupLoading ? "Đang dọn…" : "Dọn Sandbox/Snapshot cũ"}
+                {sandboxCleanupLoading ? "Đang dọn…" : "Dọn bản cũ · giữ bản mới nhất"}
               </button>
               {sandboxCleanupResult ? <p className="settings-hint">{sandboxCleanupResult}</p> : null}
               <p className="settings-hint">
