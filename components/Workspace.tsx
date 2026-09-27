@@ -701,26 +701,52 @@ export default function Workspace() {
 
   async function cleanupVercelSandbox() {
     setSandboxCleanupLoading(true);
-    setSandboxCleanupResult("");
+    setSandboxCleanupResult("⏳ Đang kiểm tra và dọn Sandbox/Snapshot cũ…");
     setError("");
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 120000);
+
     try {
       const response = await fetch("/api/sandbox/cleanup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: vercelCleanupToken }),
+        signal: controller.signal,
       });
-      const data = await response.json();
-      if (!response.ok || !data.ok) {
-        throw new Error(data.error || data.message || "Không dọn được Sandbox.");
+
+      const raw = await response.text();
+      let data: Record<string, unknown> = {};
+
+      try {
+        data = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+      } catch {
+        data = {
+          ok: false,
+          error: raw
+            ? `API trả dữ liệu không hợp lệ: ${raw.slice(0, 500)}`
+            : `API không trả dữ liệu (HTTP ${response.status}).`,
+        };
+      }
+
+      if (!response.ok || data.ok !== true) {
+        const detail = String(data.error || data.message || `HTTP ${response.status}`);
+        throw new Error(detail);
       }
 
       const keptSandboxName = String(data.keptSandboxName || "");
       const keptSnapshotId = String(data.keptSnapshotId || "");
+      const deletedSandboxes = Number(data.deletedSandboxes || 0);
+      const deletedSnapshots = Number(data.deletedSnapshots || 0);
+      const foundSandboxes = Number(data.foundSandboxes || 0);
+      const foundSnapshots = Number(data.foundSnapshots || 0);
+
       setSandboxCleanupResult(
         [
-          `Đã xóa ${data.deletedSandboxes || 0} Sandbox cũ và ${data.deletedSnapshots || 0} Snapshot cũ.`,
-          keptSandboxName ? `Giữ lại Sandbox mới nhất: ${keptSandboxName}.` : "",
-          keptSnapshotId ? "Giữ lại Snapshot mới nhất." : "",
+          `✅ Dọn xong: đã xóa ${deletedSandboxes} Sandbox cũ và ${deletedSnapshots} Snapshot cũ.`,
+          `Tìm thấy trước khi dọn: ${foundSandboxes} Sandbox / ${foundSnapshots} Snapshot.`,
+          keptSandboxName ? `Giữ lại Sandbox mới nhất: ${keptSandboxName}.` : "Không tìm thấy Sandbox Vibaocode nào để giữ.",
+          keptSnapshotId ? `Giữ lại Snapshot mới nhất: ${keptSnapshotId}.` : "",
         ].filter(Boolean).join(" ")
       );
       setVercelCleanupToken("");
@@ -741,9 +767,17 @@ export default function Workspace() {
           : "Không có Sandbox Vibaocode cũ cần xóa."
       );
     } catch (err) {
-      setSandboxCleanupResult("");
-      setError(err instanceof Error ? err.message : "Dọn Sandbox thất bại.");
+      const message =
+        err instanceof DOMException && err.name === "AbortError"
+          ? "Quá thời gian 120 giây. Vercel chưa trả kết quả; hãy thử lại."
+          : err instanceof Error
+            ? err.message
+            : "Dọn Sandbox thất bại.";
+
+      setSandboxCleanupResult(`❌ Dọn thất bại: ${message}`);
+      setError("");
     } finally {
+      window.clearTimeout(timeout);
       setSandboxCleanupLoading(false);
     }
   }
@@ -4094,7 +4128,34 @@ export default function Workspace() {
                 {sandboxCleanupLoading ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
                 {sandboxCleanupLoading ? "Đang dọn…" : "Dọn bản cũ · giữ bản mới nhất"}
               </button>
-              {sandboxCleanupResult ? <p className="settings-hint">{sandboxCleanupResult}</p> : null}
+              {sandboxCleanupResult ? (
+                <div
+                  className="settings-hint"
+                  style={{
+                    marginTop: 8,
+                    padding: "9px 10px",
+                    borderRadius: 10,
+                    border: sandboxCleanupResult.startsWith("❌")
+                      ? "1px solid rgba(239, 68, 68, .45)"
+                      : sandboxCleanupResult.startsWith("✅")
+                        ? "1px solid rgba(34, 197, 94, .45)"
+                        : "1px solid rgba(148, 163, 184, .28)",
+                    background: sandboxCleanupResult.startsWith("❌")
+                      ? "rgba(127, 29, 29, .18)"
+                      : sandboxCleanupResult.startsWith("✅")
+                        ? "rgba(20, 83, 45, .2)"
+                        : "rgba(30, 41, 59, .45)",
+                    color: sandboxCleanupResult.startsWith("❌")
+                      ? "#fecaca"
+                      : sandboxCleanupResult.startsWith("✅")
+                        ? "#bbf7d0"
+                        : "#cbd5e1",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {sandboxCleanupResult}
+                </div>
+              ) : null}
               <p className="settings-hint">
                 Token nhập ở đây không được lưu vào sessionStorage/localStorage và được xóa khỏi ô sau khi dọn thành công.
               </p>
