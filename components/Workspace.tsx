@@ -730,8 +730,15 @@ export default function Workspace() {
       }
 
       if (!response.ok || data.ok !== true) {
+        const failures = Array.isArray(data.failures)
+          ? data.failures.map((item) => String(item)).filter(Boolean)
+          : [];
         const detail = String(data.error || data.message || `HTTP ${response.status}`);
-        throw new Error(detail);
+        throw new Error(
+          failures.length
+            ? `${detail} | Failures: ${failures.slice(0, 8).join(" • ")}`
+            : detail
+        );
       }
 
       const keptSandboxName = String(data.keptSandboxName || "");
