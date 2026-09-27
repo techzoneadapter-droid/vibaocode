@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 300;
 
+type VercelItem = Record<string, unknown>;
+
 type VercelListResponse = {
   data?: unknown;
   sandboxes?: unknown[];
@@ -18,15 +20,15 @@ function queryParams(project: string, teamId: string, extra: Record<string, stri
 
 function readItems(payload: VercelListResponse, kind: "sandboxes" | "snapshots") {
   const direct = payload[kind];
-  if (Array.isArray(direct)) return direct as Record<string, unknown>[];
+  if (Array.isArray(direct)) return direct as VercelItem[];
 
   if (Array.isArray(payload.data)) {
-    return payload.data as Record<string, unknown>[];
+    return payload.data as VercelItem[];
   }
 
   if (payload.data && typeof payload.data === "object") {
     const nested = (payload.data as Record<string, unknown>)[kind];
-    if (Array.isArray(nested)) return nested as Record<string, unknown>[];
+    if (Array.isArray(nested)) return nested as VercelItem[];
   }
 
   return [];
@@ -34,6 +36,30 @@ function readItems(payload: VercelListResponse, kind: "sandboxes" | "snapshots")
 
 function readNext(payload: VercelListResponse) {
   return String(payload.pagination?.next || payload.next || "").trim();
+}
+
+function timestamp(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function createdAt(item: VercelItem) {
+  return Math.max(
+    timestamp(item.createdAt),
+    timestamp(item.created_at),
+    timestamp(item.created),
+  );
+}
+
+function newestFirst(items: VercelItem[]) {
+  return [...items].sort((a, b) => createdAt(b) - createdAt(a));
 }
 
 async function vercelFetch(url: string, token: string, init?: RequestInit) {
@@ -72,15 +98,20 @@ async function collect(
   project: string,
   teamId: string,
 ) {
-  const items: Record<string, unknown>[] = [];
+  const items: VercelItem[] = [];
   let cursor = "";
 
   for (let page = 0; page < 20; page += 1) {
-    const extra: Record<string, string> = {};
+    const extra: Record<string, string> = {
+      sortOrder: "desc",
+    };
     if (cursor) extra.cursor = cursor;
+
+    // Vercel only allows namePrefix together with sortBy=name.
+    // We need creation order so we can safely keep the newest Vibaocode Sandbox,
+    // therefore list by createdAt and filter the vibaocode- prefix locally.
     if (endpoint === "sandboxes") {
-      extra.sortBy = "name";
-      extra.namePrefix = "vibaocode-";
+      extra.sortBy = "createdAt";
     }
 
     const params = queryParams(project, teamId, extra);
@@ -95,7 +126,7 @@ async function collect(
     if (!cursor) break;
   }
 
-  return items;
+  return newestFirst(items);
 }
 
 function tokenFrom(request: NextRequest, bodyToken = "") {
@@ -104,6 +135,33 @@ function tokenFrom(request: NextRequest, bodyToken = "") {
     String(process.env.VERCEL_OIDC_TOKEN || "").trim() ||
     String(request.headers.get("x-vercel-token") || "").trim()
   );
+}
+
+function cleanupPlan(sandboxes: VercelItem[], snapshots: VercelItem[]) {
+  const vibaocodeSandboxes = newestFirst(
+    sandboxes.filter((item) => String(item.name || "").startsWith("vibaocode-")),
+  );
+  const validSnapshots = newestFirst(
+    snapshots.filter((item) => String(item.id || "").startsWith("snap_")),
+  );
+
+  const keptSandbox = vibaocodeSandboxes[0] || null;
+  const keptSnapshot = validSnapshots[0] || null;
+
+  return {
+    keptSandboxName: keptSandbox ? String(keptSandbox.name || "") : "",
+    keptSnapshotId: keptSnapshot ? String(keptSnapshot.id || "") : "",
+    sandboxNamesToDelete: vibaocodeSandboxes
+      .slice(1)
+      .map((item) => String(item.name || ""))
+      .filter(Boolean),
+    snapshotIdsToDelete: validSnapshots
+      .slice(1)
+      .map((item) => String(item.id || ""))
+      .filter(Boolean),
+    foundSandboxes: vibaocodeSandboxes.length,
+    foundSnapshots: validSnapshots.length,
+  };
 }
 
 export async function GET(request: NextRequest) {
@@ -127,15 +185,21 @@ export async function GET(request: NextRequest) {
       collect("sandboxes", token, project, teamId),
       collect("snapshots", token, project, teamId),
     ]);
+    const plan = cleanupPlan(sandboxes, snapshots);
 
     return NextResponse.json({
       ok: true,
       project,
-      sandboxCount: sandboxes.length,
-      snapshotCount: snapshots.length,
-      sandboxNames: sandboxes
-        .map((item) => String(item.name || ""))
-        .filter((name) => name.startsWith("vibaocode-")),
+      sandboxCount: plan.foundSandboxes,
+      snapshotCount: plan.foundSnapshots,
+      keptSandboxName: plan.keptSandboxName,
+      keptSnapshotId: plan.keptSnapshotId,
+      oldSandboxCount: plan.sandboxNamesToDelete.length,
+      oldSnapshotCount: plan.snapshotIdsToDelete.length,
+      sandboxNames: [
+        plan.keptSandboxName,
+        ...plan.sandboxNamesToDelete,
+      ].filter(Boolean),
     });
   } catch (error) {
     return NextResponse.json(
@@ -167,24 +231,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const snapshots = await collect("snapshots", token, project, teamId);
-    const sandboxes = await collect("sandboxes", token, project, teamId);
-
-    const snapshotIds = snapshots
-      .map((item) => String(item.id || ""))
-      .filter((id) => id.startsWith("snap_"));
-
-    const sandboxNames = sandboxes
-      .map((item) => String(item.name || ""))
-      .filter((name) => name.startsWith("vibaocode-"));
+    const [snapshots, sandboxes] = await Promise.all([
+      collect("snapshots", token, project, teamId),
+      collect("sandboxes", token, project, teamId),
+    ]);
+    const plan = cleanupPlan(sandboxes, snapshots);
 
     let deletedSnapshots = 0;
     let deletedSandboxes = 0;
     const failures: string[] = [];
 
-    // Delete named sandboxes first so they cannot create another snapshot while
-    // the old snapshot set is being cleared.
-    for (const name of sandboxNames) {
+    // IMPORTANT: Never delete the newest Vibaocode Sandbox.
+    // Only delete entries after index 0 in creation-time descending order.
+    for (const name of plan.sandboxNamesToDelete) {
       try {
         const params = new URLSearchParams();
         params.set("projectId", project);
@@ -202,7 +261,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    for (const id of snapshotIds) {
+    // Keep the newest snapshot too. Deleting every snapshot can make the newest
+    // persistent Sandbox lose its latest restore point.
+    for (const id of plan.snapshotIdsToDelete) {
       try {
         const params = new URLSearchParams();
         if (teamId) params.set("teamId", teamId);
@@ -222,14 +283,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       ok: failures.length === 0,
       project,
-      foundSandboxes: sandboxNames.length,
-      foundSnapshots: snapshotIds.length,
+      foundSandboxes: plan.foundSandboxes,
+      foundSnapshots: plan.foundSnapshots,
+      keptSandboxName: plan.keptSandboxName,
+      keptSnapshotId: plan.keptSnapshotId,
       deletedSandboxes,
       deletedSnapshots,
       failures: failures.slice(0, 20),
       message:
         failures.length === 0
-          ? "Đã dọn Sandbox và Snapshot cũ của Vibaocode."
+          ? plan.keptSandboxName
+            ? `Đã dọn Sandbox/Snapshot cũ và giữ lại Sandbox mới nhất: ${plan.keptSandboxName}.`
+            : "Không có Sandbox Vibaocode nào để xóa."
           : "Đã dọn một phần. Xem failures để biết mục chưa xóa được.",
     });
   } catch (error) {
