@@ -23,6 +23,15 @@ jobs:
         shell: pwsh
         run: npm version "0.2.${{ github.run_number }}" --no-git-tag-version
 
+      - name: Create release tag
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v$version" $env:GITHUB_SHA
+          git push origin "v$version"
+
       - name: Install
         run: npm install
 
