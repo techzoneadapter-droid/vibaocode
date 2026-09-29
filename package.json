@@ -1,25 +1,78 @@
 {
   "name": "vibaocode",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "desktop:dev": "electron .",
+    "desktop:build": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {
+    "@vercel/sandbox": "^3.3.0",
+    "electron-updater": "^6.6.2",
     "lucide-react": "^0.468.0",
     "next": "^16.0.0",
+    "qrcode": "^1.5.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "@vercel/sandbox": "^3.3.0",
-    "qrcode": "^1.5.4"
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12",
     "typescript": "^5.7.0"
+  },
+  "build": {
+    "appId": "com.vibaocode.desktop",
+    "productName": "Vibaocode",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "server"
+      },
+      {
+        "from": ".next/static",
+        "to": "server/.next/static"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Vibaocode-Setup-${version}.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Vibaocode"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "techzoneadapter-droid",
+        "repo": "vibaocode",
+        "releaseType": "release"
+      }
+    ]
   }
 }
