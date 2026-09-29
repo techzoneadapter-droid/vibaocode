@@ -40,7 +40,7 @@ export async function ensureLocalRepo(repo:string,branch:string,token="",force=f
   await tooling(); const dir=localRepoDirectory(repo,branch); await fsp.mkdir(path.dirname(dir),{recursive:true});
   if(!fs.existsSync(path.join(dir,".git"))){
     const url=token?`https://x-access-token:${encodeURIComponent(token)}@github.com/${repo}.git`:`https://github.com/${repo}.git`;
-    const r=await run(git(),["clone","--branch",branch,"--single-branch",url,dir],undefined,240000); if(r.exitCode)throw new Error `Git clone thất bại: ${(r.stderr||r.stdout).slice(-2500)}`);
+    const r=await run(git(),["clone","--branch",branch,"--single-branch",url,dir],undefined,240000); if(r.exitCode)throw new Error(`Git clone thất bại: ${(r.stderr||r.stdout).slice(-2500)}`);
   }else if(force){
     let r=await run(git(),["fetch","origin",branch],dir,120000); if(r.exitCode)throw new Error(`Git fetch thất bại: ${r.stderr.slice(-1800)}`);
     r=await run(git(),["reset","--hard",`origin/${branch}`],dir,60000); if(r.exitCode)throw new Error(`Git reset thất bại: ${r.stderr.slice(-1800)}`);
