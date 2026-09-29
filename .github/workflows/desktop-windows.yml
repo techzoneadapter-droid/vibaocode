@@ -41,10 +41,22 @@ jobs:
       - name: Build Next.js
         run: npm run build
 
-      - name: Build and publish Windows installer
+      - name: Build Windows installer
+        run: npx electron-builder --win nsis --publish never
+
+      - name: Publish single GitHub release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win nsis --publish always
+        run: |
+          $version = node -p "require('./package.json').version"
+          gh release create "v$version" `
+            "dist/Vibaocode-Setup-$version.exe" `
+            "dist/Vibaocode-Setup-$version.exe.blockmap" `
+            "dist/latest.yml" `
+            --verify-tag `
+            --title "Vibaocode $version" `
+            --notes "Vibaocode Desktop local-first for Windows. Includes local project runtime, memory/cache controls, and one-click updates."
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
