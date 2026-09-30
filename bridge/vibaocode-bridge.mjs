@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 const HOST = "127.0.0.1";
 const PORT = 43127;
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const allowedOrigins = new Set([
   "https://vibaocode.vercel.app",
   "http://localhost:3000",
@@ -19,6 +19,7 @@ const allowedOrigins = new Set([
 const projects = new Map();
 const agents = new Map();
 let authState = { status: "disconnected", url: "", log: "", error: "" };
+let authProcess = null;
 
 function send(res, status, body) {
   res.writeHead(status, {
@@ -224,7 +225,137 @@ async function installCodex() {
   return (result.stdout || result.stderr || "") + "\nCodex path: " + runner.display;
 }
 
-async function startAuth() {
+
+async function logoutCodex() {
+  try {
+    if (authProcess?.pid) killTree(authProcess.pid);
+  } catch {}
+  authProcess = null;
+  authState = { status: "disconnected", url: "", log: "", error: "" };
+  const runner = resolveCodexRunner();
+  if (!runner) return { ok: true, detail: "Codex CLI chưa được cài." };
+  const result = await runCodex(["logout"], { timeoutMs: 30000, maxOutput: 12000 }).catch((error) => ({
+    code: 1,
+    stdout: "",
+    stderr: error.message,
+  }));
+  return {
+    ok: result.code === 0,
+    detail: (result.stdout + "\n" + result.stderr).trim(),
+  };
+}
+
+function readCodexModels() {
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnCodex(["app-server", "--listen", "stdio://"], {
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let buffer = "";
+    let initialized = false;
+    let finished = false;
+    let stderr = "";
+
+    const sendMessage = (message) => {
+      try {
+        child.stdin.write(JSON.stringify(message) + "\n");
+      } catch {}
+    };
+
+    const finish = (payload) => {
+      if (finished) return;
+      finished = true;
+      try { child.kill(); } catch {}
+      resolve(payload);
+    };
+
+    child.stderr?.on("data", (chunk) => {
+      stderr = appendLog(stderr, chunk, 12000);
+    });
+
+    child.stdout?.on("data", (chunk) => {
+      buffer += String(chunk);
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        let message;
+        try { message = JSON.parse(line); } catch { continue; }
+
+        if (message.id === 1 && !initialized) {
+          if (message.error) {
+            finish({ models: [], error: message.error.message || JSON.stringify(message.error) });
+            return;
+          }
+          initialized = true;
+          sendMessage({ method: "initialized" });
+          sendMessage({
+            method: "model/list",
+            id: 8,
+            params: { limit: 50, includeHidden: false },
+          });
+          continue;
+        }
+
+        if (message.id === 8) {
+          if (message.error) {
+            finish({ models: [], error: message.error.message || JSON.stringify(message.error) });
+            return;
+          }
+          const data = Array.isArray(message.result?.data) ? message.result.data : [];
+          finish({
+            models: data.map((item) => ({
+              id: item.id || item.model || "",
+              model: item.model || item.id || "",
+              displayName: item.displayName || item.model || item.id || "",
+              isDefault: Boolean(item.isDefault),
+              defaultReasoningEffort: item.defaultReasoningEffort || null,
+              supportedReasoningEfforts: Array.isArray(item.supportedReasoningEfforts)
+                ? item.supportedReasoningEfforts.map((entry) => ({
+                    reasoningEffort: entry.reasoningEffort,
+                    description: entry.description || "",
+                  }))
+                : [],
+            })).filter((item) => item.model),
+          });
+        }
+      }
+    });
+
+    child.on("error", (error) => reject(error));
+    child.on("exit", (code) => {
+      if (!finished && code !== 0) reject(new Error(stderr || "Codex app-server exited with code " + code));
+    });
+
+    sendMessage({
+      method: "initialize",
+      id: 1,
+      params: {
+        clientInfo: {
+          name: "vibaocode-local-bridge",
+          title: "Vibaocode Local Bridge",
+          version: VERSION,
+        },
+      },
+    });
+
+    setTimeout(() => {
+      if (!finished) finish({ models: [], error: "Codex model/list timed out." });
+    }, 15000);
+  });
+}
+
+async function startAuth(forceSwitch = false) {
+  if (forceSwitch) await logoutCodex();
   const status = await codexConnected();
   if (status.connected) return { status: "connected", connected: true, detail: status.detail };
   if (!resolveCodexRunner()) {
@@ -239,6 +370,7 @@ async function startAuth() {
     windowsHide: false,
     stdio: ["ignore", "pipe", "pipe"],
   });
+  authProcess = child;
   authState.status = "waiting";
 
   const consume = (chunk) => {
@@ -601,6 +733,32 @@ const server = http.createServer(async (req, res) => {
         status: login.connected ? "connected" : authState.status,
         detail: login.detail,
       });
+      return;
+    }
+
+
+    if (req.method === "POST" && url.pathname === "/auth/switch") {
+      send(res, 200, await startAuth(true));
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/auth/logout") {
+      send(res, 200, await logoutCodex());
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/models") {
+      const login = await codexConnected();
+      if (!login.connected) {
+        send(res, 401, { connected: false, models: [], error: "Codex chưa đăng nhập ChatGPT." });
+        return;
+      }
+      const snapshot = await readCodexModels();
+      if (snapshot.error && !snapshot.models?.length) {
+        send(res, 500, { connected: true, models: [], error: snapshot.error });
+        return;
+      }
+      send(res, 200, { connected: true, ...snapshot });
       return;
     }
 
