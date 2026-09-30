@@ -9,7 +9,8 @@ import { spawn, spawnSync } from "node:child_process";
 
 const HOST = "127.0.0.1";
 const PORT = 43127;
-const VERSION = "0.1.2";
+const REMOTE_BRIDGE_URL = "https://raw.githubusercontent.com/techzoneadapter-droid/vibaocode/main/bridge/vibaocode-bridge.mjs";
+const VERSION = "0.2.0";
 const allowedOrigins = new Set([
   "https://vibaocode.vercel.app",
   "http://localhost:3000",
@@ -133,6 +134,62 @@ function spawnCodex(args, options = {}) {
     ...options,
     shell: false,
   });
+}
+
+
+function versionParts(value) {
+  return String(value || "").split(".").map((part) => Number(part) || 0);
+}
+
+function isNewerVersion(next, current) {
+  const a = versionParts(next);
+  const b = versionParts(current);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const left = a[i] || 0;
+    const right = b[i] || 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return false;
+}
+
+function installedBridgePath() {
+  const script = path.resolve(process.argv[1] || "");
+  const normalized = script.replace(/\\/g, "/").toLowerCase();
+  return normalized.includes("/vibaocode/bridge/vibaocode-bridge.mjs") ? script : "";
+}
+
+async function selfUpdateBridge() {
+  const scriptPath = installedBridgePath();
+  if (!scriptPath || typeof fetch !== "function") return { updated: false };
+
+  try {
+    const response = await fetch(REMOTE_BRIDGE_URL + "?t=" + Date.now(), { cache: "no-store" });
+    if (!response.ok) return { updated: false };
+    const source = await response.text();
+    const match = source.match(/const VERSION = "([^"]+)"/);
+    const remoteVersion = match?.[1] || "";
+    if (!remoteVersion || !isNewerVersion(remoteVersion, VERSION)) {
+      return { updated: false, version: VERSION };
+    }
+
+    const temp = scriptPath + ".new";
+    await fsp.writeFile(temp, source, "utf8");
+    await fsp.rename(temp, scriptPath);
+
+    const child = spawn(process.execPath, [scriptPath], {
+      windowsHide: true,
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, VIBAO_BRIDGE_RESTARTED: "1" },
+    });
+    child.unref();
+
+    setTimeout(() => process.exit(0), 250);
+    return { updated: true, version: remoteVersion };
+  } catch {
+    return { updated: false };
+  }
 }
 
 function safeName(value) {
@@ -359,7 +416,10 @@ async function startAuth(forceSwitch = false) {
   const status = await codexConnected();
   if (status.connected) return { status: "connected", connected: true, detail: status.detail };
   if (!resolveCodexRunner()) {
-    const error = new Error("Codex CLI chưa được cài hoặc Bridge chưa tìm thấy npm global path.");
+    await installCodex();
+  }
+  if (!resolveCodexRunner()) {
+    const error = new Error("Không thể khởi động Codex CLI sau khi tự cài đặt.");
     error.code = "codex_missing";
     throw error;
   }
@@ -711,7 +771,16 @@ const server = http.createServer(async (req, res) => {
         npmInstalled: commandExists(npmCmd()),
         gitInstalled: commandExists("git"),
         workspaceRoot: workspaceRoot(),
+        background: true,
+        autoUpdate: true,
       });
+      return;
+    }
+
+
+    if (req.method === "POST" && url.pathname === "/self-update") {
+      const result = await selfUpdateBridge();
+      send(res, 200, { ok: true, ...result, version: result.version || VERSION });
       return;
     }
 
@@ -857,5 +926,12 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log("Vibaocode Local Bridge " + VERSION);
   console.log("Listening on http://" + HOST + ":" + PORT);
-  console.log("Keep this window open while using Vibaocode.");
+
+  setTimeout(() => {
+    void selfUpdateBridge();
+  }, 1800);
+
+  setInterval(() => {
+    void selfUpdateBridge();
+  }, 30 * 60 * 1000).unref?.();
 });
