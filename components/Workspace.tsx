@@ -3760,7 +3760,7 @@ export default function Workspace() {
                                   ? "Local Bridge chưa chạy."
                                   : "Đang chuẩn bị đăng nhập ChatGPT local…"}
                           </span>
-                          <small>Nếu chưa cài Local Bridge, bấm “Cài Local Bridge” một lần rồi mở file tải xuống.</small>
+                          <small>Nếu chưa cài Local Bridge, bấm “Cài / cập nhật Local Bridge” một lần rồi mở file tải xuống.</small>
                         </>
                       )}
                     </div>
