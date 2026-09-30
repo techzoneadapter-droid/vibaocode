@@ -10,7 +10,7 @@ import { spawn, spawnSync } from "node:child_process";
 const HOST = "127.0.0.1";
 const PORT = 43127;
 const REMOTE_BRIDGE_URL = "https://raw.githubusercontent.com/techzoneadapter-droid/vibaocode/main/bridge/vibaocode-bridge.mjs";
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 const allowedOrigins = new Set([
   "https://vibaocode.vercel.app",
   "http://localhost:3000",
@@ -60,12 +60,62 @@ function commandExists(name) {
   return spawnSync(cmd, [name], { windowsHide: true, stdio: "ignore" }).status === 0;
 }
 
-function npmCmd() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
+function resolveNpmRunner() {
+  if (process.platform !== "win32") {
+    return { command: "npm", argsPrefix: [], display: "npm" };
+  }
+
+  const candidates = [];
+  const nodeDir = path.dirname(process.execPath);
+  candidates.push(path.join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
+
+  const locator = spawnSync("where", ["npm"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (locator.status === 0) {
+    const paths = String(locator.stdout || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    for (const located of paths) {
+      const base = path.dirname(located);
+      candidates.push(path.join(base, "node_modules", "npm", "bin", "npm-cli.js"));
+      candidates.push(path.join(base, "node_modules", "npm", "bin", "npm.js"));
+    }
+  }
+
+  for (const entry of candidates) {
+    if (entry && fs.existsSync(entry)) {
+      return {
+        command: process.execPath,
+        argsPrefix: [entry],
+        display: entry,
+      };
+    }
+  }
+
+  return null;
+}
+
+function runNpm(args, options = {}) {
+  const runner = resolveNpmRunner();
+  if (!runner) {
+    return Promise.reject(new Error("Không tìm thấy npm-cli.js trong Node.js installation."));
+  }
+  return run(runner.command, [...runner.argsPrefix, ...args], options);
+}
+
+function spawnNpm(args, options = {}) {
+  const runner = resolveNpmRunner();
+  if (!runner) throw new Error("Không tìm thấy npm-cli.js trong Node.js installation.");
+  return spawn(runner.command, [...runner.argsPrefix, ...args], {
+    ...options,
+    shell: false,
+  });
 }
 
 function npmGlobalRoot() {
-  const result = spawnSync(npmCmd(), ["root", "-g"], {
+  const runner = resolveNpmRunner();
+  if (!runner) return "";
+  const result = spawnSync(runner.command, [...runner.argsPrefix, "root", "-g"], {
     windowsHide: true,
     encoding: "utf8",
   });
@@ -272,8 +322,8 @@ async function codexConnected() {
 }
 
 async function installCodex() {
-  if (!commandExists(npmCmd())) throw new Error("Máy chưa có Node.js/npm.");
-  const result = await run(npmCmd(), ["install", "-g", "@openai/codex@latest"], { timeoutMs: 300000, maxOutput: 30000 });
+  if (!resolveNpmRunner()) throw new Error("Máy chưa có Node.js/npm.");
+  const result = await runNpm(["install", "-g", "@openai/codex@latest"], { timeoutMs: 300000, maxOutput: 30000 });
   if (result.code !== 0) throw new Error("Không cài được Codex CLI.\n" + (result.stderr || result.stdout));
   const runner = resolveCodexRunner();
   if (!runner) {
@@ -511,7 +561,7 @@ async function installDependencies(dir) {
   const args = fs.existsSync(path.join(dir, "package-lock.json"))
     ? ["ci", "--no-audit", "--no-fund", "--prefer-offline", "--progress=false"]
     : ["install", "--no-audit", "--no-fund", "--prefer-offline", "--progress=false"];
-  const result = await run(npmCmd(), args, {
+  const result = await runNpm(args, {
     cwd: dir,
     timeoutMs: 600000,
     maxOutput: 60000,
@@ -584,7 +634,7 @@ async function startProject({ repo, branch = "main", githubToken = "", forceRemo
   await installDependencies(dir);
   const pkg = await readPackage(dir);
   const port = await freePort();
-  const child = spawn(npmCmd(), devArgs(pkg, port), {
+  const child = spawnNpm(devArgs(pkg, port), {
     cwd: dir,
     env: { ...process.env, BROWSER: "none" },
     windowsHide: true,
@@ -637,7 +687,7 @@ async function runChecks(dir) {
   const checks = [];
   let passed = true;
   for (const name of names) {
-    const result = await run(npmCmd(), ["run", name], { cwd: dir, timeoutMs: 300000, maxOutput: 20000 });
+    const result = await runNpm(["run", name], { cwd: dir, timeoutMs: 300000, maxOutput: 20000 });
     checks.push({ name, exitCode: result.code, stdout: result.stdout, stderr: result.stderr });
     if (result.code !== 0) { passed = false; break; }
   }
@@ -768,7 +818,7 @@ const server = http.createServer(async (req, res) => {
         codexConnected: login.connected,
         codexDetail: login.detail,
         nodeInstalled: commandExists("node"),
-        npmInstalled: commandExists(npmCmd()),
+        npmInstalled: Boolean(resolveNpmRunner()),
         gitInstalled: commandExists("git"),
         workspaceRoot: workspaceRoot(),
         background: true,
