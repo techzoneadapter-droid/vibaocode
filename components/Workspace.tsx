@@ -2021,15 +2021,15 @@ export default function Workspace() {
         if (codexStatus !== "connected") {
           throw new Error(
             useHybrid
-              ? "Hybrid mode cần kết nối ChatGPT/Codex account trước."
-              : "Hãy kết nối ChatGPT/Codex trước.",
+              ? "Hybrid mode cần kết nối ChatGPT/Codex qua Local Bridge trước."
+              : "Hãy kết nối ChatGPT/Codex qua Local Bridge trước.",
           );
         }
 
         if (useHybrid) {
           setAiProgress(4);
           setAiProgressLabel("ChatGPT Director đang phân tích yêu cầu…");
-          setAiProgressDetail(`${openAIModels.find((item) => item.id === model)?.label || model} → Codex`);
+          setAiProgressDetail(`${openAIModels.find((item) => item.id === model)?.label || model} → Codex Local`);
 
           const directorResponse = await fetch("/api/ai/openai-director", {
             method: "POST",
@@ -2058,89 +2058,56 @@ export default function Workspace() {
             : [];
           setProjectPlan(hybridDirectorPlan);
           setAiProgress(7);
-          setAiProgressLabel("ChatGPT Director xong • đang giao việc cho Codex…");
+          setAiProgressLabel("ChatGPT Director xong • đang giao việc cho Codex Local…");
+        } else {
+          executionPrompt = prompt + referenceText;
         }
-        if (!sandboxRunning) {
-          setAiProgress(4);
-          setAiProgressLabel("Đang khởi động Cloud Runtime…");
+
+        const bridge = await import("../lib/local-bridge-client");
+        const health = await bridge.bridgeHealth(1500);
+        if (!health?.ok) {
+          throw new Error("Local Bridge chưa chạy. Mở file Vibaocode Local Bridge rồi thử lại.");
+        }
+        if (!health.codexConnected) {
+          throw new Error("Local Bridge đang chạy nhưng Codex chưa đăng nhập ChatGPT.");
+        }
+
+        if (!sandboxRunning || sandboxName !== "LOCAL BRIDGE") {
+          setAiProgress(5);
+          setAiProgressLabel("Đang mở project bằng Local Bridge…");
           const started = await runCloudProject();
-          if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
+          if (!started) throw new Error("Không khởi động được Local Preview trước khi Codex sửa code.");
         }
 
-        setAiProgress(6);
-        setAiProgressLabel("Đang gửi công việc cho Codex…");
+        setAiProgress(10);
+        setAiProgressLabel("Đang gửi công việc cho Codex trên máy…");
 
-        const startResponse = await fetch("/api/agent/codex-edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "run",
-            workspaceId,
-            repo,
-            branch,
-            githubToken,
-            prompt: executionPrompt,
-            codexModel,
-            codexReasoning,
-            referenceImages: activeReferences.map((item) => ({
-              path: item.path,
-              refId: item.refId,
-              title: item.title,
-              name: item.name,
-              kind: item.kind,
-              note: item.note,
-            })),
-          }),
+        const startData = await bridge.startBridgeAgent({
+          repo,
+          branch,
+          prompt: executionPrompt,
+          model: codexModel,
+          reasoning: codexReasoning,
         });
-        const startData = await startResponse.json();
-        if (!startResponse.ok) {
-          throw new Error(startData.error || "Không khởi động được Codex Agent.");
-        }
 
         setAiProgress(Math.max(15, Number(startData.progress?.percent || 15)));
-        setAiProgressLabel(startData.progress?.phase || "Codex đang làm việc trong Cloud Sandbox…");
+        setAiProgressLabel(startData.progress?.phase || "Codex đang chạy local…");
         setAiProgressDetail(startData.progress?.detail || "");
-        setNotice("Codex đang chạy nền • có thể xử lý yêu cầu lớn trong nhiều phút");
+        setNotice("Codex đang sửa code trực tiếp trên máy • không dùng Vercel Sandbox");
 
         let finished = false;
         let consecutivePollErrors = 0;
 
-        // Codex runs as a background process inside the persistent Sandbox.
-        // The browser only polls lightweight status requests, so a long design/
-        // refactor task is no longer limited by Vercel's single-request timeout.
         for (let i = 0; i < 900; i += 1) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
-
           try {
-            const statusResponse = await fetch("/api/agent/codex-edit", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "status",
-                workspaceId,
-                repo,
-                branch,
-              }),
-            });
-            if (!statusResponse.ok) {
-              consecutivePollErrors += 1;
-              if (consecutivePollErrors >= 8) {
-                throw new Error("Mất kết nối với trạng thái Codex quá lâu.");
-              }
-              continue;
-            }
-
+            const state = await bridge.bridgeAgentStatus(repo, branch);
             consecutivePollErrors = 0;
-            const state = await statusResponse.json();
             if (typeof state.percent === "number") setAiProgress(state.percent);
             if (state.phase) setAiProgressLabel(state.phase);
             setAiProgressDetail(state.detail || "");
             if (typeof state.elapsedSeconds === "number") setAiElapsedSeconds(state.elapsedSeconds);
-
-            if (state.error) {
-              throw new Error(state.error);
-            }
-
+            if (state.error) throw new Error(state.error);
             if (state.finished) {
               finished = true;
               break;
@@ -2152,32 +2119,13 @@ export default function Workspace() {
         }
 
         if (!finished) {
-          throw new Error(
-            "Codex vẫn đang chạy sau 30 phút. Workspace được giữ nguyên; hãy thử lại hoặc chia tác vụ nếu cần.",
-          );
+          throw new Error("Codex vẫn đang chạy sau 30 phút. Project local được giữ nguyên.");
         }
 
-        setAiProgress(72);
-        setAiProgressLabel("Codex đã xong • đang dựng preview và chạy test…");
+        setAiProgress(86);
+        setAiProgressLabel("Codex đã xong • đang lấy thay đổi và kết quả test…");
 
-        const resultResponse = await fetch("/api/agent/codex-edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "result",
-            workspaceId,
-            repo,
-            branch,
-            githubToken,
-            codexModel,
-            codexReasoning,
-            autoPush: Boolean(githubToken && branch === "main"),
-          }),
-        });
-        data = await resultResponse.json();
-        if (!resultResponse.ok) {
-          throw new Error(data.error || "Không lấy được kết quả Codex.");
-        }
+        data = await bridge.bridgeAgentResult(repo, branch);
 
         if (useHybrid) {
           data.plan = hybridDirectorPlan || data.plan || "";
@@ -2187,20 +2135,11 @@ export default function Workspace() {
           data.summary = `${data.summary || "Codex đã hoàn tất chỉnh sửa."}${checklist}`;
         }
 
-        if (data.autoPushResult?.verified) {
-          setSandboxRevision(String(data.autoPushResult.remoteSha || "").slice(0, 12));
-          try {
-            const treeQuery = new URLSearchParams({ repo, branch });
-            const treeResponse = await fetch(`/api/github/tree?${treeQuery}`, { headers: apiHeaders() });
-            if (treeResponse.ok) {
-              const treeData = await treeResponse.json();
-              setTreeItems(treeData.items || []);
-              setRemoteTreeSha(String(treeData.sha || ""));
-            }
-          } catch {
-            // Preview is already live from the Sandbox; tree refresh can retry in background.
-          }
+        // Codex changed the local clone. Sync proposed files into Browser preview state.
+        if (Array.isArray(data.files) && data.files.length && sandboxName === "LOCAL BRIDGE") {
+          setPreviewKey((value) => value + 1);
         }
+
       } else {
         const endpoint = useExternalProvider
           ? "/api/ai/provider-project"
@@ -2301,24 +2240,16 @@ export default function Workspace() {
   async function cancelProjectAI() {
     if (!workspaceId || !["codex-account","openai-codex-hybrid"].includes(aiProvider)) return;
     try {
-      await fetch("/api/agent/codex-edit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "cancel",
-          workspaceId,
-          repo,
-          branch,
-        }),
-      });
+      const bridge = await import("../lib/local-bridge-client");
+      await bridge.cancelBridgeAgent({ repo, branch });
       setAiLoading(false);
       setAiProgress(0);
       setAiElapsedSeconds(0);
       setAiProgressLabel("Agent đã được dừng");
       setAiProgressDetail("");
-      setNotice("Đã dừng Codex Agent");
+      setNotice("Đã dừng Codex Local");
     } catch {
-      setNotice("Không dừng được Codex Agent");
+      setNotice("Không dừng được Codex Local");
     }
   }
 
