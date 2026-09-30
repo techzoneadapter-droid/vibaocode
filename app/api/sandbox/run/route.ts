@@ -44,8 +44,9 @@ export async function POST(request: NextRequest) {
           sandbox,
           [
             `cd ${JSON.stringify(dir)} 2>/dev/null || exit 0`,
-            `LOCAL_SHA="$(git rev-parse HEAD 2>/dev/null || true)"`,
-            `if [ "$LOCAL_SHA" = ${JSON.stringify(expectedSha)} ] && curl -fsS --max-time 1 http://127.0.0.1:3000 >/dev/null 2>&1; then echo "HOT:$LOCAL_SHA"; fi`,
+            `LOCAL_TREE="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || true)"`,
+            `LOCAL_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"`,
+            `if [ "$LOCAL_TREE" = ${JSON.stringify(expectedSha)} ] && curl -fsS --max-time 1 http://127.0.0.1:3000 >/dev/null 2>&1; then echo "HOT:$LOCAL_HEAD"; fi`,
           ].join(" && "),
         );
 
