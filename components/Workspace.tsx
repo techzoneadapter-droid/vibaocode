@@ -485,7 +485,10 @@ export default function Workspace() {
       if (data.openAIReasoning) setOpenAIReasoning(data.openAIReasoning);
       if (data.codexModel) setCodexModel(data.codexModel);
       if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
-      if (["codex-account","openai-api","openai-codex-hybrid","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
+      if (["codex-account","openai-codex-hybrid"].includes(data.aiProvider)) {
+        setAiProvider("openai-api");
+        setNotice("Bản web đã chuyển khỏi Codex Cloud Sandbox. Hãy dùng OpenAI API hoặc Local Bridge để dùng ChatGPT Plus/Pro.");
+      } else if (["openai-api","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
@@ -1159,114 +1162,27 @@ export default function Workspace() {
   }
 
   async function connectCodexAccount() {
-    if (!workspaceId) return;
-    setCodexConnecting(true);
-    setCodexStatus("waiting");
+    setCodexConnecting(false);
+    setCodexStatus("disconnected");
+    setCodexPhase("web-local-required");
     setCodexVerificationUrl("");
     setCodexUserCode("");
-    setCodexDetail("");
-    setCodexPhase("starting");
+    setCodexDetail(
+      "Vibaocode hiện chạy dưới dạng web-hosted app. Đăng nhập ChatGPT Plus/Pro chính thức cho ứng dụng mã nguồn mở cần một callback local trên 127.0.0.1, nên không thể hoàn tất an toàn chỉ bằng tab Vercel. Codex Cloud Sandbox cũ đã bị loại khỏi luồng này."
+    );
+    setAiProvider("openai-api");
     setError("");
-    setNotice("Đang cài/khởi động Codex CLI và tạo mã thiết bị…");
-
-    try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "start" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không bắt đầu được Codex login.");
-      if (data.status === "error") throw new Error(data.error || data.detail || "Codex device login lỗi.");
-
-      if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
-      if (data.userCode) setCodexUserCode(data.userCode);
-      if (data.detail) setCodexDetail(data.detail);
-      if (data.phase) setCodexPhase(data.phase);
-      if (data.phase) setCodexPhase(data.phase);
-
-      if (data.verificationUrl && data.userCode) {
-        window.open(data.verificationUrl, "_blank", "noopener,noreferrer");
-        setNotice(`Mã thiết bị ${data.userCode} đã sẵn sàng • hoàn tất đăng nhập trong tab mới`);
-      } else {
-        setNotice("Codex đang tạo mã thiết bị…");
-      }
-
-      for (let i = 0; i < 290; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-        const statusResponse = await fetch("/api/agent/codex-auth", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workspaceId, action: "status" }),
-        });
-        const statusData = await statusResponse.json();
-        if (!statusResponse.ok) {
-          throw new Error(statusData.error || "Không kiểm tra được Codex login.");
-        }
-
-        if (statusData.verificationUrl) setCodexVerificationUrl(statusData.verificationUrl);
-        if (statusData.userCode) setCodexUserCode(statusData.userCode);
-        if (statusData.detail) setCodexDetail(statusData.detail);
-        if (statusData.phase) setCodexPhase(statusData.phase);
-
-        if (statusData.status === "error") {
-          throw new Error(statusData.error || statusData.detail || "Codex login lỗi.");
-        }
-
-        if (statusData.connected) {
-          setCodexStatus("connected");
-          setCodexPhase("complete");
-          setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
-          setCodexUserCode("");
-          setNotice(`Đã kết nối ChatGPT/Codex${statusData.version ? ` • ${statusData.version}` : ""}`);
-          void loadCodexUsage(false);
-          void loadCodexModels(false);
-          return;
-        }
-
-        if (statusData.userCode) {
-          setCodexStatus("waiting");
-          setNotice(`Đang chờ xác nhận mã ${statusData.userCode} trên ChatGPT…`);
-        }
-      }
-
-      setCodexPhase("timeout");
-      setNotice("Mã đăng nhập đã hết thời gian chờ. Bấm Kết nối ChatGPT để tạo mã mới.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Codex login failed.");
-      setCodexStatus("disconnected");
-      setCodexPhase("error");
-      setNotice("Kết nối ChatGPT/Codex chưa hoàn tất");
-    } finally {
-      setCodexConnecting(false);
-    }
+    setNotice("Đã chuyển sang OpenAI API — chế độ hoạt động ổn định trên Vibaocode Web.");
+    setSettingsOpen(true);
   }
 
   async function checkCodexAccount() {
-    if (!workspaceId) return;
-    try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "status" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không kiểm tra được Codex.");
-      setCodexStatus(data.connected ? "connected" : data.status === "error" ? "disconnected" : "waiting");
-      if (data.verificationUrl) setCodexVerificationUrl(data.verificationUrl);
-      if (data.userCode) setCodexUserCode(data.userCode);
-      if (data.detail) setCodexDetail(data.detail);
-      if (data.status === "error") {
-        setError(data.error || data.detail || "Codex login lỗi.");
-      }
-      setNotice(data.connected ? "ChatGPT/Codex đang kết nối" : data.userCode ? `Đang chờ mã ${data.userCode}` : "Codex chưa đăng nhập xong");
-      if (data.connected) {
-        void loadCodexUsage(false);
-        void loadCodexModels(false);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Codex status failed.");
-    }
+    setCodexStatus("disconnected");
+    setCodexPhase("web-local-required");
+    setCodexDetail(
+      "ChatGPT Plus/Pro account login is disabled in pure web mode because the official open-source sign-in flow requires a local 127.0.0.1 callback. Use OpenAI API now, or a future Local Bridge for ChatGPT-plan usage."
+    );
+    setNotice("ChatGPT account trực tiếp cần Local Bridge trên máy.");
   }
 
   async function loadCodexUsage(announce = false) {
@@ -3705,9 +3621,9 @@ export default function Workspace() {
                     )
                   }
                 >
-                  <option value="codex-account">ChatGPT / Codex account</option>
-                  <option value="openai-codex-hybrid">Hybrid • ChatGPT Director + Codex Builder</option>
-                  <option value="openai-api">ChatGPT models / OpenAI API</option>
+                  <option value="codex-account">ChatGPT Plus/Pro • cần Local Bridge</option>
+                  <option value="openai-codex-hybrid">Hybrid • cần Local Bridge</option>
+                  <option value="openai-api">OpenAI API • hoạt động trên web</option>
                   <option value="claude-api">Claude API</option>
                   <option value="gemini-api">Gemini API</option>
                   <option value="xai-api">Grok / xAI API</option>
@@ -3826,7 +3742,7 @@ export default function Workspace() {
                   <div className="account-actions">
                     <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Kết nối ChatGPT"}
+                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Dùng OpenAI API trên web"}
                     </button>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
                     <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
@@ -3847,7 +3763,7 @@ export default function Workspace() {
                     </details>
                   ) : null}
                   <p className="settings-hint">
-                    Codex dùng Device Code Authorization chính thức của ChatGPT. {aiProvider === "openai-codex-hybrid" ? "Hybrid dùng thêm OpenAI API cho ChatGPT Director; API được tính phí riêng với gói ChatGPT." : "Vibaocode không đọc cookie ChatGPT."} Nếu không ra mã, hãy bật Device Code Authorization trong ChatGPT → Settings → Security rồi tạo mã mới.
+                    Bản Vibaocode Web không dùng Vercel Sandbox để đăng nhập ChatGPT nữa. Đăng nhập ChatGPT Plus/Pro chính thức cần Local Bridge trên máy để xử lý callback local an toàn. OpenAI API hoạt động trực tiếp trên web nhưng có billing riêng với gói ChatGPT.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
@@ -4003,10 +3919,9 @@ export default function Workspace() {
             </div>
 
             <div className="settings-group">
-              <div className="settings-title"><Trash2 size={17} /><strong>Dọn Vercel Sandbox</strong></div>
+              <div className="settings-title"><Trash2 size={17} /><strong>Vercel Sandbox cũ</strong></div>
               <p className="settings-hint">
-                Dùng khi Vercel báo lỗi 402 Snapshot Storage. Vibaocode chỉ xóa <strong>Sandbox/Snapshot cũ</strong>,
-                luôn giữ lại <strong>Sandbox mới nhất</strong> và <strong>Snapshot mới nhất</strong> của project hiện tại.
+                Phần này chỉ dành cho dữ liệu Sandbox cũ. Run/Test/Preview hiện đã chạy bằng Browser Local Runtime và không cần Vercel Sandbox.
               </p>
               <label>
                 Vercel token tạm thời <span>(để trống trước; Vibaocode sẽ thử OIDC của deployment)</span>
