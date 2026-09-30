@@ -3735,16 +3735,16 @@ export default function Workspace() {
                   ) : null}
                   {codexStatus === "waiting" ? (
                     <div className="codex-device-card">
-                      <span className="eyebrow">DEVICE LOGIN</span>
+                      <span className="eyebrow">LOCAL CHATGPT LOGIN</span>
                       {codexUserCode ? (
                         <>
                           <strong className="codex-device-code">{codexUserCode}</strong>
-                          <span>Nhập mã này trên trang xác minh Codex.</span>
+                          <span>Hoàn tất đăng nhập ChatGPT trong trình duyệt.</span>
                           <div className="account-actions">
                             <button className="ghost-button" onClick={copyCodexCode} type="button">Sao chép mã</button>
                             {codexVerificationUrl ? (
                               <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
-                                Mở trang nhập mã
+                                Mở trang đăng nhập
                               </a>
                             ) : null}
                           </div>
@@ -3752,13 +3752,15 @@ export default function Workspace() {
                       ) : (
                         <>
                           <span>
-                            {codexPhase === "request-device-code"
-                              ? "Codex đã chạy • đang yêu cầu mã thiết bị từ OpenAI…"
-                              : codexPhase === "app-server"
-                                ? "Đang khởi động Codex app-server…"
-                                : "Đang chuẩn bị luồng đăng nhập Codex…"}
+                            {codexPhase === "bridge-check"
+                              ? "Đang kiểm tra Local Bridge…"
+                              : codexPhase === "local-browser-login"
+                                ? "Đã mở luồng đăng nhập ChatGPT trên máy…"
+                                : codexPhase === "bridge-missing"
+                                  ? "Local Bridge chưa chạy."
+                                  : "Đang chuẩn bị đăng nhập ChatGPT local…"}
                           </span>
-                          <small>Nếu quá khoảng 15 giây mà chưa có mã, bấm Chẩn đoán bên dưới.</small>
+                          <small>Nếu chưa cài Local Bridge, bấm “Cài Local Bridge” một lần rồi mở file tải xuống.</small>
                         </>
                       )}
                     </div>
@@ -3766,8 +3768,11 @@ export default function Workspace() {
                   <div className="account-actions">
                     <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Dùng OpenAI API trên web"}
+                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Kết nối ChatGPT"}
                     </button>
+                    <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
+                      Cài Local Bridge
+                    </a>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
                     <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
                       {codexDiagnosing ? <Loader2 className="spin" size={13} /> : null}
@@ -3787,7 +3792,7 @@ export default function Workspace() {
                     </details>
                   ) : null}
                   <p className="settings-hint">
-                    Bản Vibaocode Web không dùng Vercel Sandbox để đăng nhập ChatGPT nữa. Đăng nhập ChatGPT Plus/Pro chính thức cần Local Bridge trên máy để xử lý callback local an toàn. OpenAI API hoạt động trực tiếp trên web nhưng có billing riêng với gói ChatGPT.
+                    Local Bridge chạy trên máy của bạn để đăng nhập ChatGPT và chạy Codex/project local. Sau lần cài đầu, Run sẽ ưu tiên SSD/RAM của máy nên nhanh hơn Browser Runtime. Nếu Chrome hỏi quyền Local Network Access, chọn Allow/Cho phép.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
