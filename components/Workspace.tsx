@@ -485,10 +485,7 @@ export default function Workspace() {
       if (data.openAIReasoning) setOpenAIReasoning(data.openAIReasoning);
       if (data.codexModel) setCodexModel(data.codexModel);
       if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
-      if (["codex-account","openai-codex-hybrid"].includes(data.aiProvider)) {
-        setAiProvider("openai-api");
-        setNotice("Bản web đã chuyển khỏi Codex Cloud Sandbox. Hãy dùng OpenAI API hoặc Local Bridge để dùng ChatGPT Plus/Pro.");
-      } else if (["openai-api","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
+      if (["codex-account","openai-api","openai-codex-hybrid","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
@@ -1039,8 +1036,29 @@ export default function Workspace() {
     }
     setRunLoading(true);
     setError("");
-    setNotice("Browser Local Runtime đang tải và chạy dự án trên máy…");
+    setNotice("Đang kiểm tra Local Bridge…");
     try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        setNotice("Local Bridge đang mở project trực tiếp trên SSD/RAM máy…");
+        const data = await bridge.startBridgeProject({ repo, branch, githubToken, forceRemote });
+        setSandboxName("LOCAL BRIDGE");
+        setSandboxRevision("local");
+        setSandboxRunning(Boolean(data.running));
+        setRunLogs(data.logs || "");
+        if (data.previewUrl) {
+          setPreviewUrl(data.previewUrl);
+          setPreviewMode("url");
+          setPreviewKey((value) => value + 1);
+          setWorkspaceView("preview");
+        }
+        setNotice(data.running ? "Dự án đang chạy trực tiếp trên máy • Local Bridge" : "Server local chưa sẵn sàng");
+        return Boolean(data.running);
+      }
+
+      setNotice("Local Bridge chưa chạy • dùng Browser Runtime dự phòng…");
       const runtime = await import("../lib/browser-runtime");
       const data = await runtime.startBrowserProject({ repo, branch, githubToken, forceRemote });
       setSandboxName(data.sandboxName || "BROWSER LOCAL");
@@ -1053,11 +1071,15 @@ export default function Workspace() {
         setPreviewKey((value) => value + 1);
         setWorkspaceView("preview");
       }
-      setNotice(data.running ? "Dự án đang chạy bằng CPU/RAM của máy" : "Server chưa sẵn sàng");
+      setNotice(
+        data.running
+          ? "Dự án đang chạy bằng Browser Runtime • cài Local Bridge để lần sau khởi động nhanh hơn"
+          : "Server chưa sẵn sàng"
+      );
       return Boolean(data.running);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser Local Run failed.");
-      setNotice("Browser Local Run thất bại");
+      setError(err instanceof Error ? err.message : "Local Run failed.");
+      setNotice("Local Run thất bại");
       return false;
     } finally {
       setRunLoading(false);
@@ -1067,9 +1089,15 @@ export default function Workspace() {
   async function syncDraft(path: string, content: string) {
     if (!workspaceId || !sandboxRunning) return;
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
-      if (!synced) return;
+      if (sandboxName === "LOCAL BRIDGE") {
+        const bridge = await import("../lib/local-bridge-client");
+        const data = await bridge.syncBridgeFiles({ repo, branch, files: [{ path, content }] });
+        if (!data.synced) return;
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
+        if (!synced) return;
+      }
       setPreviewKey((value) => value + 1);
       setNotice(`Live Preview đã cập nhật local • ${path}`);
     } catch (err) {
@@ -1085,12 +1113,22 @@ export default function Workspace() {
     setTestLoading(true);
     setError("");
     setWorkspaceView("preview");
-    setNotice("Auto Test đang chạy local: dependencies → server → typecheck/lint/test/build…");
+    setNotice("Auto Test đang chạy local…");
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
-      setSandboxName(data.sandboxName || "BROWSER LOCAL");
-      setSandboxRunning(Boolean(data.serverRunning));
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+      let data: any;
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        data = await bridge.testBridgeProject({ repo, branch, githubToken });
+        setSandboxName("LOCAL BRIDGE");
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+        setSandboxName("BROWSER LOCAL");
+      }
+
+      setSandboxRunning(Boolean(data.serverRunning ?? true));
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setPreviewMode("url");
@@ -1102,7 +1140,7 @@ export default function Workspace() {
       lines.push(...(data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
       ));
-      lines.push(`Runtime: Browser Local • ${data.smokeStatus || "ready"}`);
+      lines.push(`Runtime: ${health?.ok ? "Local Bridge" : "Browser Local"} • ${data.smokeStatus || "ready"}`);
       setTestSummary(lines.join("\n\n"));
       setRunLogs(data.serverLogs || runLogs);
       setNotice(data.passed ? "Tester local: PASS" : "Tester local phát hiện lỗi");
@@ -1113,6 +1151,7 @@ export default function Workspace() {
       setTestLoading(false);
     }
   }
+
   async function playTestProject() {
     if (!workspaceId || !treeItems.length) {
       setError("Hãy Load repository trước khi chạy Local QA.");
@@ -1125,10 +1164,21 @@ export default function Workspace() {
     setPlayReport("");
     setVisualReview("");
     setError("");
-    setNotice("Local QA đang chạy trực tiếp trong Browser Runtime…");
+    setNotice("Local QA đang chạy trên máy…");
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+      let data: any;
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        data = await bridge.testBridgeProject({ repo, branch, githubToken });
+        setSandboxName("LOCAL BRIDGE");
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+        setSandboxName("BROWSER LOCAL");
+      }
+
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setSandboxRunning(true);
@@ -1136,12 +1186,11 @@ export default function Workspace() {
         setPreviewView("live");
         setPreviewKey((value) => value + 1);
       }
-      setSandboxName("BROWSER LOCAL");
       const checkLines = (data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}: ${check.exitCode === 0 ? "PASS" : "FAIL"}`
       );
       setPlayReport([
-        "Runtime: Browser Local",
+        `Runtime: ${health?.ok ? "Local Bridge" : "Browser Local"}`,
         `Dev server: ${data.serverRunning ? "RUNNING" : "STOPPED"}`,
         `Kết quả: ${data.passed ? "PASS" : "FAIL"}`,
         ...checkLines,
@@ -1155,6 +1204,7 @@ export default function Workspace() {
       setPlayTestLoading(false);
     }
   }
+
   async function openReview() {
     if (!sandboxRunning) await runCloudProject();
     setTab("diff");
@@ -1162,81 +1212,129 @@ export default function Workspace() {
   }
 
   async function connectCodexAccount() {
-    setCodexConnecting(false);
-    setCodexStatus("disconnected");
-    setCodexPhase("web-local-required");
-    setCodexVerificationUrl("");
-    setCodexUserCode("");
-    setCodexDetail(
-      "Vibaocode hiện chạy dưới dạng web-hosted app. Đăng nhập ChatGPT Plus/Pro chính thức cho ứng dụng mã nguồn mở cần một callback local trên 127.0.0.1, nên không thể hoàn tất an toàn chỉ bằng tab Vercel. Codex Cloud Sandbox cũ đã bị loại khỏi luồng này."
-    );
-    setAiProvider("openai-api");
+    setCodexConnecting(true);
     setError("");
-    setNotice("Đã chuyển sang OpenAI API — chế độ hoạt động ổn định trên Vibaocode Web.");
-    setSettingsOpen(true);
+    setCodexDetail("");
+    setCodexPhase("bridge-check");
+    setNotice("Đang kiểm tra Vibaocode Local Bridge…");
+
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      let health = await bridge.bridgeHealth(1500);
+
+      if (!health) {
+        setCodexStatus("disconnected");
+        setCodexPhase("bridge-missing");
+        setCodexDetail(
+          "Local Bridge chưa chạy. Tải file cài 1 lần, mở file đó, rồi quay lại Vibaocode. Nếu Chrome hỏi quyền truy cập mạng cục bộ, chọn Cho phép / Allow."
+        );
+        setError("Chưa tìm thấy Vibaocode Local Bridge trên máy.");
+        setNotice("Hãy cài/chạy Local Bridge một lần để dùng ChatGPT Plus/Pro và tăng tốc Run.");
+        return;
+      }
+
+      if (!health.codexInstalled) {
+        setNotice("Đang cài Codex CLI trên máy…");
+        await bridge.installBridgeCodex();
+        health = await bridge.bridgeHealth(3000);
+      }
+
+      const started = await bridge.startBridgeAuth();
+      if (started.connected) {
+        setCodexStatus("connected");
+        setCodexPhase("complete");
+        setCodexDetail(started.detail || "Logged in using ChatGPT");
+        setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
+        setNotice("Đã kết nối ChatGPT/Codex qua Local Bridge");
+        void loadCodexModels(false);
+        return;
+      }
+
+      setCodexStatus("waiting");
+      setCodexPhase("local-browser-login");
+      setCodexVerificationUrl(started.url || "");
+      setCodexDetail(started.detail || "Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
+      if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
+      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT trên máy…");
+
+      for (let i = 0; i < 180; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await bridge.bridgeAuthStatus();
+        if (status.detail) setCodexDetail(status.detail + (status.log ? "\n\n" + status.log.slice(-2500) : ""));
+        if (status.url) setCodexVerificationUrl(status.url);
+        if (status.error) throw new Error(status.error);
+        if (status.connected) {
+          setCodexStatus("connected");
+          setCodexPhase("complete");
+          setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
+          setNotice("Đã kết nối ChatGPT/Codex qua Local Bridge");
+          void loadCodexModels(false);
+          return;
+        }
+      }
+
+      throw new Error("Đăng nhập ChatGPT quá thời gian chờ. Bấm Kết nối lại.");
+    } catch (err) {
+      setCodexStatus("disconnected");
+      setCodexPhase("error");
+      setError(err instanceof Error ? err.message : "Không kết nối được ChatGPT qua Local Bridge.");
+      setNotice("Kết nối ChatGPT chưa hoàn tất");
+    } finally {
+      setCodexConnecting(false);
+    }
   }
 
   async function checkCodexAccount() {
-    setCodexStatus("disconnected");
-    setCodexPhase("web-local-required");
-    setCodexDetail(
-      "ChatGPT Plus/Pro account login is disabled in pure web mode because the official open-source sign-in flow requires a local 127.0.0.1 callback. Use OpenAI API now, or a future Local Bridge for ChatGPT-plan usage."
-    );
-    setNotice("ChatGPT account trực tiếp cần Local Bridge trên máy.");
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(1500);
+      if (!health) {
+        setCodexStatus("disconnected");
+        setCodexPhase("bridge-missing");
+        setCodexDetail("Local Bridge chưa chạy.");
+        setNotice("Không tìm thấy Local Bridge");
+        return;
+      }
+      const data = await bridge.bridgeAuthStatus();
+      setCodexStatus(data.connected ? "connected" : data.status === "waiting" ? "waiting" : "disconnected");
+      setCodexPhase(data.connected ? "complete" : data.status || "idle");
+      setCodexDetail(data.detail || data.log || "");
+      if (data.url) setCodexVerificationUrl(data.url);
+      setNotice(data.connected ? "ChatGPT/Codex đang kết nối qua Local Bridge" : "ChatGPT chưa đăng nhập");
+      if (data.connected) void loadCodexModels(false);
+    } catch (err) {
+      setCodexStatus("disconnected");
+      setError(err instanceof Error ? err.message : "Không kiểm tra được Local Bridge.");
+    }
   }
 
   async function loadCodexUsage(announce = false) {
-    if (!workspaceId) return;
-    setCodexUsageLoading(true);
-    try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "usage" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không đọc được hạn mức Codex.");
-      setCodexUsage(data);
-      if (announce) setNotice("Đã làm mới hạn mức ChatGPT/Codex");
-    } catch (err) {
-      if (announce) setError(err instanceof Error ? err.message : "Không đọc được hạn mức Codex.");
-    } finally {
-      setCodexUsageLoading(false);
+    setCodexUsageLoading(false);
+    if (announce) {
+      setNotice("Hạn mức ChatGPT Plan xem trong ChatGPT → Settings → Usage.");
     }
   }
 
   async function loadCodexModels(announce = false) {
-    if (!workspaceId) return;
     setCodexModelsLoading(true);
     try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "models" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không đọc được danh sách model Codex.");
-
-      const models = Array.isArray(data.models) ? data.models : [];
+      const models: CodexModelOption[] = [{
+        id: "default",
+        model: "",
+        displayName: "Codex mặc định • ChatGPT Plan",
+        isDefault: true,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low" },
+          { reasoningEffort: "medium" },
+          { reasoningEffort: "high" },
+          { reasoningEffort: "xhigh" },
+        ],
+      }];
       setCodexModels(models);
-
-      if (models.length) {
-        const current = models.find((item: CodexModelOption) => item.model === codexModel);
-        const selected = current || models.find((item: CodexModelOption) => item.isDefault) || models[0];
-        if (!current) setCodexModel(selected.model);
-
-        const efforts = Array.isArray(selected.supportedReasoningEfforts)
-          ? selected.supportedReasoningEfforts.map((item: any) => item.reasoningEffort)
-          : [];
-
-        if (efforts.length && !efforts.includes(codexReasoning)) {
-          setCodexReasoning(selected.defaultReasoningEffort || efforts[0]);
-        }
-      }
-
-      if (announce) setNotice(`Đã tải ${models.length} model Codex khả dụng`);
-    } catch (err) {
-      if (announce) setError(err instanceof Error ? err.message : "Không đọc được model Codex.");
+      setCodexModel("");
+      if (!["low","medium","high","xhigh"].includes(codexReasoning)) setCodexReasoning("medium");
+      if (announce) setNotice("Codex sẽ dùng model mặc định của ChatGPT Plan");
     } finally {
       setCodexModelsLoading(false);
     }
@@ -1244,12 +1342,8 @@ export default function Workspace() {
 
   function chooseCodexModel(nextModel: string) {
     setCodexModel(nextModel);
-    const selected = codexModels.find((item) => item.model === nextModel);
-    const efforts = selected?.supportedReasoningEfforts?.map((item) => item.reasoningEffort) || [];
-    if (efforts.length && !efforts.includes(codexReasoning)) {
-      setCodexReasoning(selected?.defaultReasoningEffort || efforts[0]);
-    }
   }
+
 
   async function loadOpenAIModels(announce = false) {
     setOpenAIModelsLoading(true);
@@ -1360,35 +1454,34 @@ export default function Workspace() {
   }
 
   async function diagnoseCodexAccount() {
-    if (!workspaceId) return;
     setCodexDiagnosing(true);
     setError("");
-    setNotice("Đang chẩn đoán Codex CLI và kết nối auth.openai.com…");
-
+    setNotice("Đang kiểm tra Local Bridge, Node, Git và Codex…");
     try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "diagnostics" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được chẩn đoán Codex.");
-
-      const lines = [
-        data.version ? `Codex: ${data.version}` : "",
-        data.source ? `Nguồn CLI: ${data.source}` : "",
-        data.state ? `State: ${JSON.stringify(data.state, null, 2)}` : "",
-        data.loginStatus ? `Login status:\n${data.loginStatus}` : "",
-        data.dns ? `DNS:\n${data.dns}` : "",
-        data.connectivity ? `auth.openai.com:\n${data.connectivity}` : "",
-        data.log ? `App-server log:\n${data.log}` : "",
-      ].filter(Boolean);
-
-      setCodexDetail(lines.join("\n\n"));
-      setNotice("Đã chẩn đoán Codex • mở Chi tiết kỹ thuật để xem kết quả");
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(2500);
+      if (!health) {
+        setCodexDetail(
+          "Không kết nối được http://127.0.0.1:43127. Local Bridge chưa chạy hoặc Chrome đang chặn quyền mạng cục bộ. Nếu Chrome hiện hộp hỏi Local Network Access, hãy chọn Allow/Cho phép."
+        );
+        setCodexPhase("bridge-missing");
+        setNotice("Không tìm thấy Local Bridge");
+        return;
+      }
+      setCodexDetail([
+        `Local Bridge: v${health.version || "?"}`,
+        `Node: ${health.nodeInstalled ? "OK" : "MISSING"}`,
+        `npm: ${health.npmInstalled ? "OK" : "MISSING"}`,
+        `Git: ${health.gitInstalled ? "OK" : "MISSING"}`,
+        `Codex CLI: ${health.codexInstalled ? "OK" : "MISSING"}`,
+        `ChatGPT: ${health.codexConnected ? "CONNECTED" : "NOT CONNECTED"}`,
+        health.codexDetail || "",
+        `Workspace: ${health.workspaceRoot || "?"}`,
+      ].filter(Boolean).join("\n"));
+      setCodexStatus(health.codexConnected ? "connected" : "disconnected");
+      setNotice("Đã chẩn đoán Local Bridge");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Codex diagnostics failed.");
-      setNotice("Chẩn đoán Codex gặp lỗi");
+      setError(err instanceof Error ? err.message : "Local Bridge diagnostics failed.");
     } finally {
       setCodexDiagnosing(false);
     }
@@ -1928,15 +2021,15 @@ export default function Workspace() {
         if (codexStatus !== "connected") {
           throw new Error(
             useHybrid
-              ? "Hybrid mode cần kết nối ChatGPT/Codex account trước."
-              : "Hãy kết nối ChatGPT/Codex trước.",
+              ? "Hybrid mode cần kết nối ChatGPT/Codex qua Local Bridge trước."
+              : "Hãy kết nối ChatGPT/Codex qua Local Bridge trước.",
           );
         }
 
         if (useHybrid) {
           setAiProgress(4);
           setAiProgressLabel("ChatGPT Director đang phân tích yêu cầu…");
-          setAiProgressDetail(`${openAIModels.find((item) => item.id === model)?.label || model} → Codex`);
+          setAiProgressDetail(`${openAIModels.find((item) => item.id === model)?.label || model} → Codex Local`);
 
           const directorResponse = await fetch("/api/ai/openai-director", {
             method: "POST",
@@ -1965,89 +2058,56 @@ export default function Workspace() {
             : [];
           setProjectPlan(hybridDirectorPlan);
           setAiProgress(7);
-          setAiProgressLabel("ChatGPT Director xong • đang giao việc cho Codex…");
+          setAiProgressLabel("ChatGPT Director xong • đang giao việc cho Codex Local…");
+        } else {
+          executionPrompt = prompt + referenceText;
         }
-        if (!sandboxRunning) {
-          setAiProgress(4);
-          setAiProgressLabel("Đang khởi động Cloud Runtime…");
+
+        const bridge = await import("../lib/local-bridge-client");
+        const health = await bridge.bridgeHealth(1500);
+        if (!health?.ok) {
+          throw new Error("Local Bridge chưa chạy. Mở file Vibaocode Local Bridge rồi thử lại.");
+        }
+        if (!health.codexConnected) {
+          throw new Error("Local Bridge đang chạy nhưng Codex chưa đăng nhập ChatGPT.");
+        }
+
+        if (!sandboxRunning || sandboxName !== "LOCAL BRIDGE") {
+          setAiProgress(5);
+          setAiProgressLabel("Đang mở project bằng Local Bridge…");
           const started = await runCloudProject();
-          if (!started) throw new Error("Không khởi động được Live Preview trước khi Codex sửa code.");
+          if (!started) throw new Error("Không khởi động được Local Preview trước khi Codex sửa code.");
         }
 
-        setAiProgress(6);
-        setAiProgressLabel("Đang gửi công việc cho Codex…");
+        setAiProgress(10);
+        setAiProgressLabel("Đang gửi công việc cho Codex trên máy…");
 
-        const startResponse = await fetch("/api/agent/codex-edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "run",
-            workspaceId,
-            repo,
-            branch,
-            githubToken,
-            prompt: executionPrompt,
-            codexModel,
-            codexReasoning,
-            referenceImages: activeReferences.map((item) => ({
-              path: item.path,
-              refId: item.refId,
-              title: item.title,
-              name: item.name,
-              kind: item.kind,
-              note: item.note,
-            })),
-          }),
+        const startData = await bridge.startBridgeAgent({
+          repo,
+          branch,
+          prompt: executionPrompt,
+          model: codexModel,
+          reasoning: codexReasoning,
         });
-        const startData = await startResponse.json();
-        if (!startResponse.ok) {
-          throw new Error(startData.error || "Không khởi động được Codex Agent.");
-        }
 
         setAiProgress(Math.max(15, Number(startData.progress?.percent || 15)));
-        setAiProgressLabel(startData.progress?.phase || "Codex đang làm việc trong Cloud Sandbox…");
+        setAiProgressLabel(startData.progress?.phase || "Codex đang chạy local…");
         setAiProgressDetail(startData.progress?.detail || "");
-        setNotice("Codex đang chạy nền • có thể xử lý yêu cầu lớn trong nhiều phút");
+        setNotice("Codex đang sửa code trực tiếp trên máy • không dùng Vercel Sandbox");
 
         let finished = false;
         let consecutivePollErrors = 0;
 
-        // Codex runs as a background process inside the persistent Sandbox.
-        // The browser only polls lightweight status requests, so a long design/
-        // refactor task is no longer limited by Vercel's single-request timeout.
         for (let i = 0; i < 900; i += 1) {
           await new Promise((resolve) => setTimeout(resolve, 2000));
-
           try {
-            const statusResponse = await fetch("/api/agent/codex-edit", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "status",
-                workspaceId,
-                repo,
-                branch,
-              }),
-            });
-            if (!statusResponse.ok) {
-              consecutivePollErrors += 1;
-              if (consecutivePollErrors >= 8) {
-                throw new Error("Mất kết nối với trạng thái Codex quá lâu.");
-              }
-              continue;
-            }
-
+            const state = await bridge.bridgeAgentStatus(repo, branch);
             consecutivePollErrors = 0;
-            const state = await statusResponse.json();
             if (typeof state.percent === "number") setAiProgress(state.percent);
             if (state.phase) setAiProgressLabel(state.phase);
             setAiProgressDetail(state.detail || "");
             if (typeof state.elapsedSeconds === "number") setAiElapsedSeconds(state.elapsedSeconds);
-
-            if (state.error) {
-              throw new Error(state.error);
-            }
-
+            if (state.error) throw new Error(state.error);
             if (state.finished) {
               finished = true;
               break;
@@ -2059,32 +2119,13 @@ export default function Workspace() {
         }
 
         if (!finished) {
-          throw new Error(
-            "Codex vẫn đang chạy sau 30 phút. Workspace được giữ nguyên; hãy thử lại hoặc chia tác vụ nếu cần.",
-          );
+          throw new Error("Codex vẫn đang chạy sau 30 phút. Project local được giữ nguyên.");
         }
 
-        setAiProgress(72);
-        setAiProgressLabel("Codex đã xong • đang dựng preview và chạy test…");
+        setAiProgress(86);
+        setAiProgressLabel("Codex đã xong • đang lấy thay đổi và kết quả test…");
 
-        const resultResponse = await fetch("/api/agent/codex-edit", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "result",
-            workspaceId,
-            repo,
-            branch,
-            githubToken,
-            codexModel,
-            codexReasoning,
-            autoPush: Boolean(githubToken && branch === "main"),
-          }),
-        });
-        data = await resultResponse.json();
-        if (!resultResponse.ok) {
-          throw new Error(data.error || "Không lấy được kết quả Codex.");
-        }
+        data = await bridge.bridgeAgentResult(repo, branch);
 
         if (useHybrid) {
           data.plan = hybridDirectorPlan || data.plan || "";
@@ -2094,20 +2135,11 @@ export default function Workspace() {
           data.summary = `${data.summary || "Codex đã hoàn tất chỉnh sửa."}${checklist}`;
         }
 
-        if (data.autoPushResult?.verified) {
-          setSandboxRevision(String(data.autoPushResult.remoteSha || "").slice(0, 12));
-          try {
-            const treeQuery = new URLSearchParams({ repo, branch });
-            const treeResponse = await fetch(`/api/github/tree?${treeQuery}`, { headers: apiHeaders() });
-            if (treeResponse.ok) {
-              const treeData = await treeResponse.json();
-              setTreeItems(treeData.items || []);
-              setRemoteTreeSha(String(treeData.sha || ""));
-            }
-          } catch {
-            // Preview is already live from the Sandbox; tree refresh can retry in background.
-          }
+        // Codex changed the local clone. Sync proposed files into Browser preview state.
+        if (Array.isArray(data.files) && data.files.length && sandboxName === "LOCAL BRIDGE") {
+          setPreviewKey((value) => value + 1);
         }
+
       } else {
         const endpoint = useExternalProvider
           ? "/api/ai/provider-project"
@@ -2208,24 +2240,16 @@ export default function Workspace() {
   async function cancelProjectAI() {
     if (!workspaceId || !["codex-account","openai-codex-hybrid"].includes(aiProvider)) return;
     try {
-      await fetch("/api/agent/codex-edit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "cancel",
-          workspaceId,
-          repo,
-          branch,
-        }),
-      });
+      const bridge = await import("../lib/local-bridge-client");
+      await bridge.cancelBridgeAgent({ repo, branch });
       setAiLoading(false);
       setAiProgress(0);
       setAiElapsedSeconds(0);
       setAiProgressLabel("Agent đã được dừng");
       setAiProgressDetail("");
-      setNotice("Đã dừng Codex Agent");
+      setNotice("Đã dừng Codex Local");
     } catch {
-      setNotice("Không dừng được Codex Agent");
+      setNotice("Không dừng được Codex Local");
     }
   }
 
@@ -3711,16 +3735,16 @@ export default function Workspace() {
                   ) : null}
                   {codexStatus === "waiting" ? (
                     <div className="codex-device-card">
-                      <span className="eyebrow">DEVICE LOGIN</span>
+                      <span className="eyebrow">LOCAL CHATGPT LOGIN</span>
                       {codexUserCode ? (
                         <>
                           <strong className="codex-device-code">{codexUserCode}</strong>
-                          <span>Nhập mã này trên trang xác minh Codex.</span>
+                          <span>Hoàn tất đăng nhập ChatGPT trong trình duyệt.</span>
                           <div className="account-actions">
                             <button className="ghost-button" onClick={copyCodexCode} type="button">Sao chép mã</button>
                             {codexVerificationUrl ? (
                               <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
-                                Mở trang nhập mã
+                                Mở trang đăng nhập
                               </a>
                             ) : null}
                           </div>
@@ -3728,13 +3752,15 @@ export default function Workspace() {
                       ) : (
                         <>
                           <span>
-                            {codexPhase === "request-device-code"
-                              ? "Codex đã chạy • đang yêu cầu mã thiết bị từ OpenAI…"
-                              : codexPhase === "app-server"
-                                ? "Đang khởi động Codex app-server…"
-                                : "Đang chuẩn bị luồng đăng nhập Codex…"}
+                            {codexPhase === "bridge-check"
+                              ? "Đang kiểm tra Local Bridge…"
+                              : codexPhase === "local-browser-login"
+                                ? "Đã mở luồng đăng nhập ChatGPT trên máy…"
+                                : codexPhase === "bridge-missing"
+                                  ? "Local Bridge chưa chạy."
+                                  : "Đang chuẩn bị đăng nhập ChatGPT local…"}
                           </span>
-                          <small>Nếu quá khoảng 15 giây mà chưa có mã, bấm Chẩn đoán bên dưới.</small>
+                          <small>Nếu chưa cài Local Bridge, bấm “Cài Local Bridge” một lần rồi mở file tải xuống.</small>
                         </>
                       )}
                     </div>
@@ -3742,8 +3768,11 @@ export default function Workspace() {
                   <div className="account-actions">
                     <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Dùng OpenAI API trên web"}
+                      {codexStatus === "connected" ? "Đăng nhập lại ChatGPT" : "Kết nối ChatGPT"}
                     </button>
+                    <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
+                      Cài Local Bridge
+                    </a>
                     <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
                     <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
                       {codexDiagnosing ? <Loader2 className="spin" size={13} /> : null}
@@ -3763,7 +3792,7 @@ export default function Workspace() {
                     </details>
                   ) : null}
                   <p className="settings-hint">
-                    Bản Vibaocode Web không dùng Vercel Sandbox để đăng nhập ChatGPT nữa. Đăng nhập ChatGPT Plus/Pro chính thức cần Local Bridge trên máy để xử lý callback local an toàn. OpenAI API hoạt động trực tiếp trên web nhưng có billing riêng với gói ChatGPT.
+                    Local Bridge chạy trên máy của bạn để đăng nhập ChatGPT và chạy Codex/project local. Sau lần cài đầu, Run sẽ ưu tiên SSD/RAM của máy nên nhanh hơn Browser Runtime. Nếu Chrome hỏi quyền Local Network Access, chọn Allow/Cho phép.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
