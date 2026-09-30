@@ -1029,6 +1029,22 @@ export default function Workspace() {
     }
   }
 
+  async function ensureFreshLocalBridge(bridge: typeof import("../lib/local-bridge-client"), timeoutMs = 700) {
+    let health = await bridge.bridgeHealth(timeoutMs);
+    if (!health?.ok) return health;
+
+    const update = await bridge.ensureBridgeUpdated();
+    if (!update?.updated) return health;
+
+    setNotice("Local Bridge vừa tự cập nhật • đang khởi động lại…");
+    health = null;
+    for (let i = 0; i < 18 && !health; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      health = await bridge.bridgeHealth(900);
+    }
+    return health;
+  }
+
   async function runCloudProject(forceRemote = false, skipLoadedCheck = false) {
     if (!workspaceId || (!skipLoadedCheck && !treeItems.length)) {
       setError("Hãy Load repository trước khi chạy.");
@@ -1039,7 +1055,7 @@ export default function Workspace() {
     setNotice("Đang kiểm tra Local Bridge…");
     try {
       const bridge = await import("../lib/local-bridge-client");
-      const health = await bridge.bridgeHealth(700);
+      const health = await ensureFreshLocalBridge(bridge, 700);
 
       if (health?.ok && health.nodeInstalled && health.gitInstalled) {
         setNotice("Local Bridge đang mở project trực tiếp trên SSD/RAM máy…");
@@ -1116,7 +1132,7 @@ export default function Workspace() {
     setNotice("Auto Test đang chạy local…");
     try {
       const bridge = await import("../lib/local-bridge-client");
-      const health = await bridge.bridgeHealth(700);
+      const health = await ensureFreshLocalBridge(bridge, 700);
       let data: any;
 
       if (health?.ok && health.nodeInstalled && health.gitInstalled) {
@@ -1167,7 +1183,7 @@ export default function Workspace() {
     setNotice("Local QA đang chạy trên máy…");
     try {
       const bridge = await import("../lib/local-bridge-client");
-      const health = await bridge.bridgeHealth(700);
+      const health = await ensureFreshLocalBridge(bridge, 700);
       let data: any;
 
       if (health?.ok && health.nodeInstalled && health.gitInstalled) {
