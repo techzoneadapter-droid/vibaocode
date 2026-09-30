@@ -24,6 +24,146 @@ let status: BrowserRuntimeStatus = { state: "idle" };
 const listeners = new Set<(value: BrowserRuntimeStatus) => void>();
 const MAX_LOG = 160000;
 
+const CACHE_DB = "vibaocode-browser-cache-v1";
+const CACHE_STORE = "dependency-snapshots";
+
+function openCacheDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(CACHE_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Không mở được IndexedDB cache."));
+  });
+}
+
+async function cacheGet(key: string) {
+  if (typeof indexedDB === "undefined") return null;
+  const db = await openCacheDb();
+  try {
+    return await new Promise<Uint8Array | null>((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, "readonly");
+      const request = tx.objectStore(CACHE_STORE).get(key);
+      request.onsuccess = () => {
+        const value = request.result;
+        if (!value) return resolve(null);
+        if (value instanceof Uint8Array) return resolve(value);
+        if (value instanceof ArrayBuffer) return resolve(new Uint8Array(value));
+        if (value?.data instanceof ArrayBuffer) return resolve(new Uint8Array(value.data));
+        resolve(null);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function cachePut(key: string, bytes: Uint8Array) {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openCacheDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, "readwrite");
+      tx.objectStore(CACHE_STORE).put(bytes, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function cacheDelete(key: string) {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openCacheDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, "readwrite");
+      tx.objectStore(CACHE_STORE).delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function cacheClear() {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openCacheDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(CACHE_STORE, "readwrite");
+      tx.objectStore(CACHE_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function dependencyFingerprint() {
+  if (!container) throw new Error("Runtime chưa sẵn sàng.");
+  const parts: string[] = [];
+  for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"]) {
+    try {
+      parts.push(name + "\n" + String(await container.fs.readFile("/" + name, "utf-8")));
+    } catch {}
+  }
+  const text = parts.join("\n---\n");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  const hash = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return currentRepo + "#" + currentBranch + "#" + hash;
+}
+
+async function hasPackageLock() {
+  if (!container) return false;
+  try {
+    await container.fs.readFile("/package-lock.json");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function restoreDependencyCache(cacheKey: string) {
+  if (!container) return false;
+  const snapshot = await cacheGet(cacheKey).catch(() => null);
+  if (!snapshot?.byteLength) return false;
+  emit({ state: "installing", message: "Đang khôi phục dependencies từ cache trên máy…" });
+  try {
+    await container.fs.mkdir("/node_modules", { recursive: true }).catch(() => {});
+    await container.mount(snapshot, { mountPoint: "node_modules" });
+    installed = true;
+    addLog("\n[Vibaocode] Dependencies restored from IndexedDB cache.\n");
+    return true;
+  } catch (error) {
+    addLog("\n[Vibaocode] Dependency cache invalid, rebuilding: " + String(error) + "\n");
+    await cacheDelete(cacheKey).catch(() => {});
+    await container.fs.rm("/node_modules", { recursive: true, force: true }).catch(() => {});
+    return false;
+  }
+}
+
+async function persistDependencyCache(cacheKey: string) {
+  if (!container) return;
+  try {
+    const snapshot = await container.export("node_modules", { format: "binary" });
+    if (snapshot instanceof Uint8Array && snapshot.byteLength > 0) {
+      await cachePut(cacheKey, snapshot);
+      addLog("\n[Vibaocode] Dependency cache saved for fast startup.\n");
+    }
+  } catch (error) {
+    addLog("\n[Vibaocode] Could not persist dependency cache: " + String(error) + "\n");
+  }
+}
+
+
 function emit(patch: Partial<BrowserRuntimeStatus>) {
   status = { ...status, ...patch, logs: logBuffer };
   for (const listener of listeners) listener(status);
@@ -158,10 +298,42 @@ async function runProcess(command: string, args: string[], timeoutMs = 180000, e
 
 async function installDependencies() {
   if (installed) return;
-  emit({ state: "installing", message: "Đang cài dependencies bằng CPU/RAM của máy…" });
-  const result = await runProcess("npm", ["install", "--no-audit", "--no-fund"], 600000);
-  if (result.exitCode !== 0) throw new Error("npm install thất bại.\n" + result.output.slice(-3500));
-  installed = true;
+  const cacheKey = await dependencyFingerprint();
+
+  if (await restoreDependencyCache(cacheKey)) {
+    emit({ state: "installing", message: "Dependencies đã sẵn sàng từ cache local." });
+    return;
+  }
+
+  const startedAt = Date.now();
+  const progressTimer = window.setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    emit({
+      state: "installing",
+      message: "Lần đầu đang cài dependencies… " + seconds + "s. Các lần sau sẽ dùng cache và nhanh hơn nhiều.",
+    });
+  }, 3000);
+
+  emit({ state: "installing", message: "Lần đầu đang cài dependencies… Các lần sau sẽ dùng cache local." });
+  try {
+    const args = await hasPackageLock()
+      ? ["ci", "--no-audit", "--no-fund", "--prefer-offline", "--progress=false"]
+      : ["install", "--no-audit", "--no-fund", "--prefer-offline", "--progress=false"];
+    const result = await runProcess("npm", args, 600000, {
+      NPM_CONFIG_UPDATE_NOTIFIER: "false",
+      NPM_CONFIG_FUND: "false",
+      NPM_CONFIG_AUDIT: "false",
+    });
+    if (result.exitCode !== 0) throw new Error("npm install thất bại.\n" + result.output.slice(-3500));
+    installed = true;
+
+    // Do not block preview on snapshot creation. Persist it after Run can continue.
+    window.setTimeout(() => {
+      void persistDependencyCache(cacheKey);
+    }, 1200);
+  } finally {
+    window.clearInterval(progressTimer);
+  }
 }
 
 function devArgs(pkg: Awaited<ReturnType<typeof readPackage>>) {
@@ -281,5 +453,11 @@ export async function optimizeBrowserMemory() {
   currentBranch = "";
   status = { state: "idle", message: "Đã giải phóng Browser Runtime khỏi RAM. Bấm Run để chạy lại." };
   emit({});
+  return true;
+}
+
+
+export async function clearBrowserDependencyCache() {
+  await cacheClear();
   return true;
 }
