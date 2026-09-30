@@ -6,7 +6,6 @@ import { Sandbox } from "@vercel/sandbox";
 // Long AI jobs extend the session explicitly via reserveLongAgentSession().
 const DEFAULT_TIMEOUT = 10 * 60 * 1000;
 const SNAPSHOT_EXPIRATION = 24 * 60 * 60 * 1000;
-const REMOTE_REFRESH_INTERVAL_SECONDS = 120;
 const PORTS = [3000, 6080, 9222];
 
 export function safeWorkspaceId(value: string) {
