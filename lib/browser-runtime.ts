@@ -145,7 +145,7 @@ async function restoreDependencyCache(cacheKey: string) {
   } catch (error) {
     addLog("\n[Vibaocode] Dependency cache invalid, rebuilding: " + String(error) + "\n");
     await cacheDelete(cacheKey).catch(() => {});
-    await container.fs.rm("/node_modules", { recursive: true, force: true }).catch(() => {});
+    await container.fs.rm("/node_modules", { recursive: true }).catch(() => {});
     return false;
   }
 }
