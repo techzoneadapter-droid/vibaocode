@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
     const branch = String(body.branch || "main").trim();
     const githubToken = String(body.githubToken || "").trim();
     const forceRemote = Boolean(body.forceRemote);
+    const expectedSha = String(body.expectedSha || "").trim();
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -36,6 +37,36 @@ export async function POST(request: NextRequest) {
     const dir = repoDirectory(repo, branch);
 
     if (action === "start") {
+      // Fast path: if this exact GitHub revision is already running, do not
+      // fetch, hash dependencies, compact, or restart anything.
+      if (!forceRemote && expectedSha) {
+        const hot = await shell(
+          sandbox,
+          [
+            `cd ${JSON.stringify(dir)} 2>/dev/null || exit 0`,
+            `LOCAL_SHA="$(git rev-parse HEAD 2>/dev/null || true)"`,
+            `if [ "$LOCAL_SHA" = ${JSON.stringify(expectedSha)} ] && curl -fsS --max-time 1 http://127.0.0.1:3000 >/dev/null 2>&1; then echo "HOT:$LOCAL_SHA"; fi`,
+          ].join(" && "),
+        );
+
+        const match = hot.stdout.match(/HOT:([0-9a-f]{7,40})/i);
+        if (match) {
+          const logs = await shell(
+            sandbox,
+            `cd ${JSON.stringify(dir)} && tail -n 80 .vibaocode-dev.log 2>/dev/null || true`,
+          );
+          return NextResponse.json({
+            sandboxName: sandbox.name,
+            previewUrl: sandbox.domain(3000),
+            running: true,
+            logs: logs.stdout,
+            revision: match[1].slice(0, 12),
+            reused: true,
+            saver: "hot-reuse",
+          });
+        }
+      }
+
       const ensuredDir = await ensurePublicRepo(
         sandbox,
         repo,
