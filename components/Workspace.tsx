@@ -1220,28 +1220,48 @@ export default function Workspace() {
 
     try {
       const bridge = await import("../lib/local-bridge-client");
-      let health = await bridge.bridgeHealth(1500);
+      let health = await bridge.bridgeHealth(900);
 
       if (!health) {
+        setNotice("Đang tự bật Vibaocode Local Bridge…");
+        bridge.launchInstalledBridge();
+        for (let i = 0; i < 12 && !health; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 650));
+          health = await bridge.bridgeHealth(900);
+        }
+      }
+
+      if (!health) {
+        bridge.downloadBridgeInstaller();
         setCodexStatus("disconnected");
-        setCodexPhase("bridge-missing");
+        setCodexPhase("bridge-install-once");
         setCodexDetail(
-          "Local Bridge chưa chạy. Tải file cài 1 lần, mở file đó, rồi quay lại Vibaocode. Nếu Chrome hỏi quyền truy cập mạng cục bộ, chọn Cho phép / Allow."
+          "Windows/Chrome không cho website tự chạy helper chưa được cài. File cài nhỏ đã được tải xuống. Đây là lần duy nhất cần mở file; sau đó Bridge chạy ngầm, tự bật và tự cập nhật."
         );
-        setError("Chưa tìm thấy Vibaocode Local Bridge trên máy.");
-        setNotice("Hãy cài/chạy Local Bridge một lần để dùng ChatGPT Plus/Pro và tăng tốc Run.");
+        setNotice("Chỉ còn 1 bước cài helper lần cuối • sau đó chỉ cần bấm Kết nối ChatGPT");
         return;
       }
 
-      if (!health.codexInstalled) {
-        setNotice("Đang cài Codex CLI trên máy…");
-        await bridge.installBridgeCodex();
-        health = await bridge.bridgeHealth(3000);
+      const update = await bridge.ensureBridgeUpdated();
+      if (update?.updated) {
+        setNotice("Bridge vừa tự cập nhật • đang khởi động lại…");
+        health = null;
+        for (let i = 0; i < 16 && !health; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          health = await bridge.bridgeHealth(900);
+        }
       }
 
-      const started = codexStatus === "connected"
-        ? await bridge.switchBridgeAuth()
-        : await bridge.startBridgeAuth();
+      if (!health) throw new Error("Local Bridge đang khởi động lại. Bấm Kết nối ChatGPT thêm một lần.");
+
+      if (!health.codexInstalled) {
+        setNotice("Đang tự cài Codex CLI…");
+        await bridge.installBridgeCodex();
+        health = await bridge.bridgeHealth(3000);
+        if (!health) throw new Error("Local Bridge mất kết nối sau khi cài Codex.");
+      }
+
+      const started = health.codexConnected ? await bridge.switchBridgeAuth() : await bridge.startBridgeAuth();
       if (started.connected) {
         setCodexStatus("connected");
         setCodexPhase("complete");
@@ -1253,11 +1273,11 @@ export default function Workspace() {
       }
 
       setCodexStatus("waiting");
-      setCodexPhase(codexStatus === "connected" ? "switch-account" : "local-browser-login");
+      setCodexPhase("local-browser-login");
       setCodexVerificationUrl(started.url || "");
       setCodexDetail(started.detail || "Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
       if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
-      setNotice(codexStatus === "connected" ? "Đã đăng xuất Codex cũ • hãy chọn tài khoản ChatGPT muốn dùng…" : "Đang chờ bạn hoàn tất đăng nhập ChatGPT trên máy…");
+      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT…");
 
       for (let i = 0; i < 180; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -1281,6 +1301,42 @@ export default function Workspace() {
       setCodexPhase("error");
       setError(err instanceof Error ? err.message : "Không kết nối được ChatGPT qua Local Bridge.");
       setNotice("Kết nối ChatGPT chưa hoàn tất");
+    } finally {
+      setCodexConnecting(false);
+    }
+  }
+
+  async function switchCodexAccount() {
+    setCodexConnecting(true);
+    setError("");
+    setNotice("Đang mở đăng nhập tài khoản ChatGPT khác…");
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(1500);
+      if (!health) throw new Error("Local Bridge chưa chạy.");
+      const started = await bridge.switchBridgeAuth();
+      setCodexStatus("waiting");
+      setCodexPhase("switch-account");
+      setCodexVerificationUrl(started.url || "");
+      if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
+
+      for (let i = 0; i < 180; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await bridge.bridgeAuthStatus();
+        if (status.url) setCodexVerificationUrl(status.url);
+        if (status.error) throw new Error(status.error);
+        if (status.connected) {
+          setCodexStatus("connected");
+          setCodexPhase("complete");
+          setCodexDetail(status.detail || "");
+          setNotice("Đã đổi tài khoản ChatGPT");
+          void loadCodexModels(false);
+          return;
+        }
+      }
+      throw new Error("Đăng nhập tài khoản mới quá thời gian chờ.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không đổi được tài khoản ChatGPT.");
     } finally {
       setCodexConnecting(false);
     }
@@ -2967,49 +3023,6 @@ export default function Workspace() {
                 </button>
               </div>
 
-              {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") && codexStatus === "connected" ? (
-                <div className="codex-model-card">
-                  <div className="codex-model-card-head">
-                    <span className="eyebrow">CODEX MODEL</span>
-                    <button className="text-button" onClick={() => loadCodexModels(true)} disabled={codexModelsLoading} type="button">
-                      {codexModelsLoading ? <Loader2 className="spin" size={11} /> : <RefreshCw size={11} />}
-                      Làm mới
-                    </button>
-                  </div>
-                  <label>
-                    Model
-                    <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
-                      {!codexModels.length ? <option value="">Đang đọc từ Codex…</option> : null}
-                      {codexModels.map((item) => (
-                        <option key={item.model} value={item.model}>
-                          {item.displayName}{item.isDefault ? " • mặc định" : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    Reasoning
-                    <select
-                      value={codexReasoning}
-                      onChange={(e) => setCodexReasoning(e.target.value)}
-                      disabled={!codexModel}
-                    >
-                      {(() => {
-                        const selected = codexModels.find((item) => item.model === codexModel);
-                        const efforts = selected?.supportedReasoningEfforts || [];
-                        if (!efforts.length) {
-                          return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
-                        }
-                        return efforts.map((item) => (
-                          <option key={item.reasoningEffort} value={item.reasoningEffort}>
-                            {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
-                          </option>
-                        ));
-                      })()}
-                    </select>
-                  </label>
-                </div>
-              ) : null}
 
               {(aiProvider === "openai-api" || aiProvider === "openai-codex-hybrid") ? (
                 <div className="codex-model-card">
@@ -3671,147 +3684,125 @@ export default function Workspace() {
               {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") ? (
                 <div className="account-connect-card">
                   <div>
-                    <strong>{aiProvider === "openai-codex-hybrid" ? "Hybrid • ChatGPT Director + Codex Builder" : "ChatGPT / Codex"}</strong>
+                    <strong>{aiProvider === "openai-codex-hybrid" ? "Hybrid • ChatGPT + Codex" : "ChatGPT / Codex"}</strong>
                     <span className={`connection-state ${codexStatus}`}>
                       {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
                     </span>
                   </div>
-                  {aiProvider === "openai-codex-hybrid" ? (
-                    <div className="codex-settings-model">
-                      <label>
-                        ChatGPT Director model
-                        <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
-                          {openAIModels.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        ChatGPT reasoning
-                        <select value={openAIReasoning} onChange={(e) => setOpenAIReasoning(e.target.value)}>
-                          {(() => {
-                            const selected = openAIModels.find((item) => item.id === model);
-                            const efforts = selected?.reasoning || [];
-                            if (!efforts.length) return <option value="high">high</option>;
-                            return efforts.map((effort) => (
-                              <option key={effort} value={effort}>{effort}</option>
-                            ));
-                          })()}
-                        </select>
-                      </label>
-                      <label>
-                        OpenAI API key
-                        <input
-                          type="password"
-                          value={openAIKey}
-                          onChange={(e) => setOpenAIKey(e.target.value)}
-                          placeholder="sk-…"
-                          autoComplete="off"
-                        />
-                      </label>
-                      <button className="ghost-button" onClick={() => loadOpenAIModels(true)} disabled={openAIModelsLoading} type="button">
-                        {openAIModelsLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
-                        Tải model ChatGPT
-                      </button>
-                      <small>ChatGPT lập kế hoạch/prompt → Codex sửa code, chạy test và tự lưu main khi PASS.</small>
-                    </div>
-                  ) : null}
-                  {codexStatus === "connected" ? (
-                    <div className="codex-settings-model">
-                      <label>
-                        Codex model
-                        <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
-                          {!codexModels.length ? <option value="">Đang đọc từ Codex…</option> : null}
-                          {codexModelsLoading ? <option value="">Đang tải model từ ChatGPT…</option> : null}
-                          {!codexModelsLoading && !codexModels.length ? <option value="">Chưa tải được model</option> : null}
-                          {codexModels.map((item) => (
-                            <option key={item.model} value={item.model}>
-                              {item.displayName}{item.isDefault ? " • mặc định" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Reasoning
-                        <select value={codexReasoning} onChange={(e) => setCodexReasoning(e.target.value)} disabled={!codexModel}>
-                          {(() => {
-                            const selected = codexModels.find((item) => item.model === codexModel);
-                            const efforts = selected?.supportedReasoningEfforts || [];
-                            if (!efforts.length) return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
-                            return efforts.map((item) => (
-                              <option key={item.reasoningEffort} value={item.reasoningEffort}>
-                                {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
-                              </option>
-                            ));
-                          })()}
-                        </select>
-                      </label>
-                    </div>
-                  ) : null}
+
                   {codexStatus === "waiting" ? (
                     <div className="codex-device-card">
-                      <span className="eyebrow">LOCAL CHATGPT LOGIN</span>
-                      {codexUserCode ? (
-                        <>
-                          <strong className="codex-device-code">{codexUserCode}</strong>
-                          <span>Hoàn tất đăng nhập ChatGPT trong trình duyệt.</span>
-                          <div className="account-actions">
-                            <button className="ghost-button" onClick={copyCodexCode} type="button">Sao chép mã</button>
-                            {codexVerificationUrl ? (
-                              <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
-                                Mở trang đăng nhập
-                              </a>
-                            ) : null}
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <span>
-                            {codexPhase === "bridge-check"
-                              ? "Đang kiểm tra Local Bridge…"
-                              : codexPhase === "switch-account"
-                                ? "Đã đăng xuất tài khoản Codex cũ • hãy chọn tài khoản ChatGPT muốn dùng ở trang đăng nhập."
-                                : codexPhase === "local-browser-login"
-                                  ? "Đã mở luồng đăng nhập ChatGPT trên máy…"
-                                  : codexPhase === "bridge-missing"
-                                    ? "Local Bridge chưa chạy."
-                                    : "Đang chuẩn bị đăng nhập ChatGPT local…"}
-                          </span>
-                          <small>Nếu trang OpenAI vẫn tự vào tài khoản cũ, hãy đăng xuất tài khoản đó trên trang đăng nhập rồi chọn tài khoản khác.</small>
-                        </>
-                      )}
+                      <span className="eyebrow">CHATGPT LOGIN</span>
+                      <span>Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.</span>
+                      {codexVerificationUrl ? (
+                        <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
+                          Mở lại trang đăng nhập
+                        </a>
+                      ) : null}
                     </div>
                   ) : null}
+
+                  {codexStatus === "connected" ? (
+                    <div className="codex-device-card">
+                      <span className="eyebrow">READY</span>
+                      <strong>{codexModels.find((item) => item.model === codexModel)?.displayName || "ChatGPT Plan • tự động"}</strong>
+                      <span>Vibaocode tự dùng model mặc định phù hợp. Không cần chọn gì thêm.</span>
+                    </div>
+                  ) : null}
+
                   <div className="account-actions">
-                    <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
+                    <button
+                      className="primary-button"
+                      onClick={connectCodexAccount}
+                      disabled={codexConnecting || codexStatus === "connected"}
+                      type="button"
+                    >
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      {codexStatus === "connected" ? "Đổi tài khoản ChatGPT" : "Kết nối ChatGPT"}
-                    </button>
-                    <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
-                      Cài Local Bridge
-                    </a>
-                    <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra</button>
-                    <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
-                      {codexDiagnosing ? <Loader2 className="spin" size={13} /> : null}
-                      Chẩn đoán
+                      {codexStatus === "connected" ? "ChatGPT đã kết nối" : "Kết nối ChatGPT"}
                     </button>
                   </div>
-                  {codexStatus === "connected" ? (
-                    <button className="ghost-button codex-usage-refresh" onClick={() => loadCodexUsage(true)} disabled={codexUsageLoading} type="button">
-                      {codexUsageLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
-                      Làm mới hạn mức AI
-                    </button>
-                  ) : null}
-                  {codexDetail && codexStatus !== "connected" ? (
-                    <details className="codex-auth-detail" open={codexPhase === "error"}>
-                      <summary>Chi tiết kỹ thuật Codex</summary>
-                      <pre>{codexDetail.slice(-4000)}</pre>
-                    </details>
-                  ) : null}
+
+                  <details className="codex-auth-detail">
+                    <summary>Nâng cao</summary>
+                    <div className="codex-settings-model">
+                      {aiProvider === "openai-codex-hybrid" ? (
+                        <>
+                          <label>
+                            ChatGPT Director model
+                            <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
+                              {openAIModels.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            OpenAI API key
+                            <input
+                              type="password"
+                              value={openAIKey}
+                              onChange={(e) => setOpenAIKey(e.target.value)}
+                              placeholder="sk-…"
+                              autoComplete="off"
+                            />
+                          </label>
+                        </>
+                      ) : null}
+
+                      {codexStatus === "connected" ? (
+                        <>
+                          <label>
+                            Codex model
+                            <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
+                              {codexModelsLoading ? <option value="">Đang tải model…</option> : null}
+                              {!codexModelsLoading && !codexModels.length ? <option value="">Tự động</option> : null}
+                              {codexModels.map((item) => (
+                                <option key={item.model} value={item.model}>
+                                  {item.displayName}{item.isDefault ? " • mặc định" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Reasoning
+                            <select value={codexReasoning} onChange={(e) => setCodexReasoning(e.target.value)} disabled={!codexModel}>
+                              {(() => {
+                                const selected = codexModels.find((item) => item.model === codexModel);
+                                const efforts = selected?.supportedReasoningEfforts || [];
+                                if (!efforts.length) return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
+                                return efforts.map((item) => (
+                                  <option key={item.reasoningEffort} value={item.reasoningEffort}>
+                                    {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
+                                  </option>
+                                ));
+                              })()}
+                            </select>
+                          </label>
+                          <button className="ghost-button" onClick={switchCodexAccount} disabled={codexConnecting} type="button">
+                            Đổi tài khoản ChatGPT
+                          </button>
+                          <button className="ghost-button" onClick={() => loadCodexModels(true)} disabled={codexModelsLoading} type="button">
+                            {codexModelsLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
+                            Làm mới model
+                          </button>
+                        </>
+                      ) : null}
+
+                      <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
+                        Cài lại helper nền
+                      </a>
+                      <button className="ghost-button" onClick={checkCodexAccount} type="button">Kiểm tra kết nối</button>
+                      <button className="ghost-button" onClick={diagnoseCodexAccount} disabled={codexDiagnosing} type="button">
+                        {codexDiagnosing ? <Loader2 className="spin" size={13} /> : null}
+                        Chẩn đoán
+                      </button>
+                      {codexDetail && codexStatus !== "connected" ? <pre>{codexDetail.slice(-4000)}</pre> : null}
+                    </div>
+                  </details>
+
                   <p className="settings-hint">
-                    Local Bridge chạy trên máy của bạn để đăng nhập ChatGPT và chạy Codex/project local. Sau lần cài đầu, Run sẽ ưu tiên SSD/RAM của máy nên nhanh hơn Browser Runtime. Nếu Chrome hỏi quyền Local Network Access, chọn Allow/Cho phép.
+                    Bình thường bạn chỉ cần bấm “Kết nối ChatGPT”. Helper nền sẽ tự chạy cùng Windows và tự cập nhật.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (

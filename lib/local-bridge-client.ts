@@ -41,6 +41,14 @@ export async function bridgeHealth(timeoutMs = 900): Promise<BridgeHealth | null
   }
 }
 
+export async function ensureBridgeUpdated() {
+  try {
+    return await request("/self-update", { method: "POST" }, 12000);
+  } catch {
+    return null;
+  }
+}
+
 export async function installBridgeCodex() {
   return request("/setup/codex", { method: "POST" }, 310000);
 }
@@ -131,4 +139,26 @@ export async function cancelBridgeAgent(body: any) {
 
 export function bridgeInstallerUrl() {
   return "/start-vibaocode-bridge.cmd";
+}
+
+export function launchInstalledBridge() {
+  try {
+    const frame = document.createElement("iframe");
+    frame.style.display = "none";
+    frame.src = "vibaocode://start";
+    document.body.appendChild(frame);
+    window.setTimeout(() => frame.remove(), 2500);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function downloadBridgeInstaller() {
+  const link = document.createElement("a");
+  link.href = "/start-vibaocode-bridge.cmd";
+  link.download = "start-vibaocode-bridge.cmd";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
