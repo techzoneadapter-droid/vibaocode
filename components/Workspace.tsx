@@ -1220,28 +1220,47 @@ export default function Workspace() {
 
     try {
       const bridge = await import("../lib/local-bridge-client");
-      let health = await bridge.bridgeHealth(1500);
+      let health = await bridge.bridgeHealth(900);
 
       if (!health) {
+        setNotice("Đang tự bật Vibaocode Local Bridge…");
+        bridge.launchInstalledBridge();
+        for (let i = 0; i < 12 && !health; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 650));
+          health = await bridge.bridgeHealth(900);
+        }
+      }
+
+      if (!health) {
+        bridge.downloadBridgeInstaller();
         setCodexStatus("disconnected");
-        setCodexPhase("bridge-missing");
+        setCodexPhase("bridge-install-once");
         setCodexDetail(
-          "Local Bridge chưa chạy. Tải file cài 1 lần, mở file đó, rồi quay lại Vibaocode. Nếu Chrome hỏi quyền truy cập mạng cục bộ, chọn Cho phép / Allow."
+          "Windows/Chrome không cho website tự chạy helper chưa được cài. File cài nhỏ đã được tải xuống. Đây là lần duy nhất cần mở file; sau đó Bridge chạy ngầm, tự bật và tự cập nhật."
         );
-        setError("Chưa tìm thấy Vibaocode Local Bridge trên máy.");
-        setNotice("Hãy cài/chạy Local Bridge một lần để dùng ChatGPT Plus/Pro và tăng tốc Run.");
+        setNotice("Chỉ còn 1 bước cài helper lần cuối • sau đó chỉ cần bấm Kết nối ChatGPT");
         return;
       }
 
+      const update = await bridge.ensureBridgeUpdated();
+      if (update?.updated) {
+        setNotice("Bridge vừa tự cập nhật • đang khởi động lại…");
+        health = null;
+        for (let i = 0; i < 16 && !health; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          health = await bridge.bridgeHealth(900);
+        }
+      }
+
+      if (!health) throw new Error("Local Bridge đang khởi động lại. Bấm Kết nối ChatGPT thêm một lần.");
+
       if (!health.codexInstalled) {
-        setNotice("Đang cài Codex CLI trên máy…");
+        setNotice("Đang tự cài Codex CLI…");
         await bridge.installBridgeCodex();
         health = await bridge.bridgeHealth(3000);
       }
 
-      const started = codexStatus === "connected"
-        ? await bridge.switchBridgeAuth()
-        : await bridge.startBridgeAuth();
+      const started = await bridge.startBridgeAuth();
       if (started.connected) {
         setCodexStatus("connected");
         setCodexPhase("complete");
@@ -1253,11 +1272,11 @@ export default function Workspace() {
       }
 
       setCodexStatus("waiting");
-      setCodexPhase(codexStatus === "connected" ? "switch-account" : "local-browser-login");
+      setCodexPhase("local-browser-login");
       setCodexVerificationUrl(started.url || "");
       setCodexDetail(started.detail || "Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
       if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
-      setNotice(codexStatus === "connected" ? "Đã đăng xuất Codex cũ • hãy chọn tài khoản ChatGPT muốn dùng…" : "Đang chờ bạn hoàn tất đăng nhập ChatGPT trên máy…");
+      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT…");
 
       for (let i = 0; i < 180; i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -1281,6 +1300,42 @@ export default function Workspace() {
       setCodexPhase("error");
       setError(err instanceof Error ? err.message : "Không kết nối được ChatGPT qua Local Bridge.");
       setNotice("Kết nối ChatGPT chưa hoàn tất");
+    } finally {
+      setCodexConnecting(false);
+    }
+  }
+
+  async function switchCodexAccount() {
+    setCodexConnecting(true);
+    setError("");
+    setNotice("Đang mở đăng nhập tài khoản ChatGPT khác…");
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(1500);
+      if (!health) throw new Error("Local Bridge chưa chạy.");
+      const started = await bridge.switchBridgeAuth();
+      setCodexStatus("waiting");
+      setCodexPhase("switch-account");
+      setCodexVerificationUrl(started.url || "");
+      if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
+
+      for (let i = 0; i < 180; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await bridge.bridgeAuthStatus();
+        if (status.url) setCodexVerificationUrl(status.url);
+        if (status.error) throw new Error(status.error);
+        if (status.connected) {
+          setCodexStatus("connected");
+          setCodexPhase("complete");
+          setCodexDetail(status.detail || "");
+          setNotice("Đã đổi tài khoản ChatGPT");
+          void loadCodexModels(false);
+          return;
+        }
+      }
+      throw new Error("Đăng nhập tài khoản mới quá thời gian chờ.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không đổi được tài khoản ChatGPT.");
     } finally {
       setCodexConnecting(false);
     }
@@ -3787,7 +3842,7 @@ export default function Workspace() {
                   <div className="account-actions">
                     <button className="primary-button" onClick={connectCodexAccount} disabled={codexConnecting} type="button">
                       {codexConnecting ? <Loader2 className="spin" size={14} /> : <KeyRound size={14} />}
-                      {codexStatus === "connected" ? "Đổi tài khoản ChatGPT" : "Kết nối ChatGPT"}
+                      {codexStatus === "connected" ? "ChatGPT đã kết nối" : "Kết nối ChatGPT"}
                     </button>
                     <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
                       Cài Local Bridge
