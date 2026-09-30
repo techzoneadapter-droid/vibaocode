@@ -1258,6 +1258,7 @@ export default function Workspace() {
         setNotice("Đang tự cài Codex CLI…");
         await bridge.installBridgeCodex();
         health = await bridge.bridgeHealth(3000);
+        if (!health) throw new Error("Local Bridge mất kết nối sau khi cài Codex.");
       }
 
       const started = health.codexConnected ? await bridge.switchBridgeAuth() : await bridge.startBridgeAuth();
