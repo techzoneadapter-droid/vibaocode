@@ -10,7 +10,7 @@ import { spawn, spawnSync } from "node:child_process";
 const HOST = "127.0.0.1";
 const PORT = 43127;
 const REMOTE_BRIDGE_URL = "https://raw.githubusercontent.com/techzoneadapter-droid/vibaocode/main/bridge/vibaocode-bridge.mjs";
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 const allowedOrigins = new Set([
   "https://vibaocode.vercel.app",
   "http://localhost:3000",
@@ -586,9 +586,17 @@ async function freePort(start = 5173) {
   throw new Error("Không tìm được port trống.");
 }
 
-async function waitPort(port, timeoutMs = 90000) {
+async function waitServer(port, child, state, timeoutMs = 90000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    if (child.exitCode !== null) {
+      const logs = state.logs.slice(-6000);
+      const nodeHint = /vite requires node\.js version|node\.js version .* is not supported|unsupported engine/i.test(logs)
+        ? "\n\nNode hiện tại: " + process.version + ". Project cần Node mới hơn hoặc dependency tương thích hơn."
+        : "";
+      throw new Error("Dev server đã thoát trước khi mở cổng." + nodeHint + "\n\n" + logs);
+    }
+
     const ok = await new Promise((resolve) => {
       const socket = net.createConnection({ host: HOST, port });
       socket.setTimeout(600);
@@ -597,9 +605,12 @@ async function waitPort(port, timeoutMs = 90000) {
       socket.once("error", () => resolve(false));
     });
     if (ok) return true;
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 350));
   }
-  return false;
+
+  throw new Error(
+    "Dev server quá 90 giây chưa sẵn sàng. Node " + process.version + ".\n\n" + state.logs.slice(-6000)
+  );
 }
 
 async function readPackage(dir) {
@@ -647,9 +658,9 @@ async function startProject({ repo, branch = "main", githubToken = "", forceRemo
   child.stdout?.on("data", onLog);
   child.stderr?.on("data", onLog);
   child.on("exit", (code) => { state.logs = appendLog(state.logs, "\n[Vibaocode] dev server exited " + code + "\n"); });
+  child.on("error", (error) => { state.logs = appendLog(state.logs, "\n[Vibaocode] spawn error: " + error.message + "\n"); });
 
-  const ready = await waitPort(port);
-  if (!ready) throw new Error("Dev server chưa sẵn sàng.\n" + state.logs.slice(-5000));
+  await waitServer(port, child, state);
   return {
     runtime: "local-bridge",
     sandboxName: "LOCAL BRIDGE",
@@ -818,6 +829,7 @@ const server = http.createServer(async (req, res) => {
         codexConnected: login.connected,
         codexDetail: login.detail,
         nodeInstalled: commandExists("node"),
+        nodeVersion: process.version,
         npmInstalled: Boolean(resolveNpmRunner()),
         gitInstalled: commandExists("git"),
         workspaceRoot: workspaceRoot(),
