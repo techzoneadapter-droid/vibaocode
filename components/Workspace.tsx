@@ -1036,24 +1036,12 @@ export default function Workspace() {
     }
     setRunLoading(true);
     setError("");
-    setNotice("Cloud Sandbox đang cài và chạy dự án…");
+    setNotice("Browser Local Runtime đang tải và chạy dự án trên máy…");
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-          forceRemote,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được dự án.");
-      setSandboxName(data.sandboxName || "");
-      setSandboxRevision(data.revision || "");
+      const runtime = await import("../lib/browser-runtime");
+      const data = await runtime.startBrowserProject({ repo, branch, githubToken, forceRemote });
+      setSandboxName(data.sandboxName || "BROWSER LOCAL");
+      setSandboxRevision(data.revision || "browser");
       setSandboxRunning(Boolean(data.running));
       setRunLogs(data.logs || "");
       if (data.previewUrl) {
@@ -1062,11 +1050,11 @@ export default function Workspace() {
         setPreviewKey((value) => value + 1);
         setWorkspaceView("preview");
       }
-      setNotice(data.running ? "Dự án đang chạy trong Cloud Sandbox" : "Server chưa sẵn sàng");
+      setNotice(data.running ? "Dự án đang chạy bằng CPU/RAM của máy" : "Server chưa sẵn sàng");
       return Boolean(data.running);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Cloud Run failed.");
-      setNotice("Cloud Run thất bại");
+      setError(err instanceof Error ? err.message : "Browser Local Run failed.");
+      setNotice("Browser Local Run thất bại");
       return false;
     } finally {
       setRunLoading(false);
@@ -1076,25 +1064,13 @@ export default function Workspace() {
   async function syncDraft(path: string, content: string) {
     if (!workspaceId || !sandboxRunning) return;
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "sync",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-          files: [{ path, content }],
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Live sync failed.");
-      if (data.previewUrl) setPreviewUrl(data.previewUrl);
+      const runtime = await import("../lib/browser-runtime");
+      const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
+      if (!synced) return;
       setPreviewKey((value) => value + 1);
-      setNotice(`Live Preview đã cập nhật • ${path}`);
+      setNotice(`Live Preview đã cập nhật local • ${path}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Live sync failed.");
+      setError(err instanceof Error ? err.message : "Live sync local failed.");
     }
   }
 
@@ -1106,22 +1082,11 @@ export default function Workspace() {
     setTestLoading(true);
     setError("");
     setWorkspaceView("preview");
-    setNotice("Auto Test đang chuẩn bị dependencies → server → typecheck/lint/test/build → smoke…");
+    setNotice("Auto Test đang chạy local: dependencies → server → typecheck/lint/test/build…");
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "test",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được test.");
-      setSandboxName(data.sandboxName || sandboxName);
+      const runtime = await import("../lib/browser-runtime");
+      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+      setSandboxName(data.sandboxName || "BROWSER LOCAL");
       setSandboxRunning(Boolean(data.serverRunning));
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
@@ -1134,132 +1099,59 @@ export default function Workspace() {
       lines.push(...(data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
       ));
-      lines.push(`HTTP smoke: ${data.smokeStatus || "unknown"}`);
+      lines.push(`Runtime: Browser Local • ${data.smokeStatus || "ready"}`);
       setTestSummary(lines.join("\n\n"));
       setRunLogs(data.serverLogs || runLogs);
-      setNotice(data.passed ? "Tester: PASS" : "Tester phát hiện lỗi");
+      setNotice(data.passed ? "Tester local: PASS" : "Tester local phát hiện lỗi");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tester failed.");
-      setNotice("Tester gặp lỗi");
+      setError(err instanceof Error ? err.message : "Tester local failed.");
+      setNotice("Tester local gặp lỗi");
     } finally {
       setTestLoading(false);
     }
   }
-
   async function playTestProject() {
     if (!workspaceId || !treeItems.length) {
-      setError("Hãy Load repository trước khi play test.");
+      setError("Hãy Load repository trước khi chạy Local QA.");
       return;
     }
     setPlayTestLoading(true);
-    setWorkspaceView("preview");
-    setPreviewView("replay");
     setPlayScreenshots([]);
     setLiveTestImage("");
-    setLiveTestLabel("Đang khởi động browser tester…");
+    setLiveTestLabel("Đang chạy Local QA…");
     setPlayReport("");
     setVisualReview("");
     setError("");
-    setNotice("AI đang tự chơi thử — bạn có thể xem trực tiếp trong khung điện thoại…");
-
+    setNotice("Local QA đang chạy trực tiếp trong Browser Runtime…");
     try {
-      const startResponse = await fetch("/api/sandbox/playtest-live", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-        }),
-      });
-      const startData = await startResponse.json();
-      if (!startResponse.ok) {
-        throw new Error(startData.error || startData.detail || "Không bắt đầu được live play test.");
-      }
-
-      if (startData.previewUrl) {
-        setPreviewUrl(startData.previewUrl);
+      const runtime = await import("../lib/browser-runtime");
+      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+      if (data.previewUrl) {
+        setPreviewUrl(data.previewUrl);
         setSandboxRunning(true);
+        setPreviewMode("url");
+        setPreviewView("live");
+        setPreviewKey((value) => value + 1);
       }
-      setSandboxName(startData.sandboxName || sandboxName);
-      setPreviewView("replay");
-
-      const runId = String(startData.runId || "");
-      if (!runId) throw new Error("Play tester không trả về runId.");
-
-      let finished = false;
-      let finalData: any = null;
-
-      for (let i = 0; i < 180; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        const statusResponse = await fetch("/api/sandbox/playtest-live", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "status",
-            workspaceId,
-            repo,
-            branch,
-            runId,
-          }),
-        });
-        const statusData = await statusResponse.json();
-        if (!statusResponse.ok) {
-          throw new Error(statusData.error || "Không đọc được trạng thái play test.");
-        }
-
-        finalData = statusData;
-        if (statusData.currentImage) setLiveTestImage(statusData.currentImage);
-        if (statusData.state?.label) setLiveTestLabel(statusData.state.label);
-
-        const status = statusData.state?.status;
-        if (status === "completed" || status === "failed") {
-          finished = true;
-          break;
-        }
-      }
-
-      if (!finished) {
-        throw new Error("AI Play Test chạy quá lâu. Bạn có thể thử lại sau.");
-      }
-
-      const state = finalData?.state || {};
-      const shots = Array.isArray(finalData?.screenshots) ? finalData.screenshots : [];
-      setPlayScreenshots(shots);
-      setPlayStep(Math.max(0, shots.length - 1));
-
-      const actions = Array.isArray(state.actions) ? state.actions : [];
-      const consoleErrors = Array.isArray(state.consoleErrors) ? state.consoleErrors : [];
-      const pageErrors = Array.isArray(state.pageErrors) ? state.pageErrors : [];
-      setPlayReport(
-        [
-          `Trạng thái: ${state.status || "unknown"}`,
-          `Trang: ${state.title || "(không có title)"}`,
-          `Actions: ${actions.length}`,
-          `Console errors: ${consoleErrors.length}`,
-          `Page errors: ${pageErrors.length}`,
-          ...consoleErrors.slice(0, 6).map((item: string) => `console: ${item}`),
-          ...pageErrors.slice(0, 6).map((item: string) => `page: ${item}`),
-          state.error ? `tester: ${state.error}` : "",
-        ].filter(Boolean).join("\n")
+      setSandboxName("BROWSER LOCAL");
+      const checkLines = (data.checks || []).map(
+        (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}: ${check.exitCode === 0 ? "PASS" : "FAIL"}`
       );
-
-      setLiveTestLabel(state.status === "completed" ? "Hoàn tất" : "Tester gặp lỗi");
-      setNotice(
-        state.status === "completed"
-          ? "AI Play Test hoàn tất — bạn có thể xem lại từng bước"
-          : "AI Play Test phát hiện lỗi"
-      );
+      setPlayReport([
+        "Runtime: Browser Local",
+        `Dev server: ${data.serverRunning ? "RUNNING" : "STOPPED"}`,
+        `Kết quả: ${data.passed ? "PASS" : "FAIL"}`,
+        ...checkLines,
+      ].join("\n"));
+      setLiveTestLabel(data.passed ? "Local QA hoàn tất" : "Local QA phát hiện lỗi");
+      setNotice(data.passed ? "Local QA: PASS" : "Local QA phát hiện lỗi");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Live play test failed.");
-      setNotice("AI Play Test gặp lỗi");
+      setError(err instanceof Error ? err.message : "Local QA failed.");
+      setNotice("Local QA gặp lỗi");
     } finally {
       setPlayTestLoading(false);
     }
   }
-
   async function openReview() {
     if (!sandboxRunning) await runCloudProject();
     setTab("diff");
@@ -2892,7 +2784,7 @@ export default function Workspace() {
                         <strong>{treeItems.length ? "Bấm Run để mở app" : "Load một GitHub project"}</strong>
                         <span>
                           {treeItems.length
-                            ? "Vibaocode sẽ tự chạy code trên cloud và hiển thị app ở đây."
+                            ? "Vibaocode sẽ chạy code bằng CPU/RAM của máy ngay trong Chrome và hiển thị app ở đây."
                             : "Sau khi Load, bạn chỉ cần mô tả thay đổi cho AI."}
                         </span>
                         {treeItems.length ? (
@@ -3621,7 +3513,7 @@ export default function Workspace() {
               {sandboxRunning && (runLogs || testSummary) ? (
                 <div className="runtime-console drawer-console">
                   <div className="runtime-console-head">
-                    <strong>Cloud Runtime</strong>
+                    <strong>Browser Local Runtime</strong>
                     <span>{sandboxName || "sandbox"}{sandboxRevision ? ` • ${sandboxRevision}` : ""} • live sync {autoSync ? "ON" : "OFF"}</span>
                   </div>
                   {testSummary ? <pre>{testSummary}</pre> : null}
@@ -3664,7 +3556,7 @@ export default function Workspace() {
 
             <div className="phone-preview-body">
               <p>
-                Quét QR bằng camera điện thoại để mở đúng bản Preview đang chạy trong Cloud Sandbox.
+                Preview hiện chạy trong Browser Runtime trên máy này; QR có thể không hoạt động trên thiết bị khác.
                 Không cần cài app.
               </p>
 
@@ -3710,7 +3602,7 @@ export default function Workspace() {
                 <MonitorSmartphone size={16} />
                 <span>
                   QR được tạo ngay trong trình duyệt và không gửi Preview URL sang dịch vụ QR bên thứ ba.
-                  Link chỉ hoạt động khi Cloud Sandbox còn online.
+                  Link preview chỉ tồn tại trong phiên Browser Runtime hiện tại.
                 </span>
               </div>
             </div>

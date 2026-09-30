@@ -18,7 +18,9 @@
     "next": "^16.0.0",
     "qrcode": "^1.5.4",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "@webcontainer/api": "^1.6.4",
+    "fflate": "^0.8.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
