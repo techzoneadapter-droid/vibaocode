@@ -58,11 +58,14 @@ echo [3/4] Dang tao khoi dong cung Windows...
 >> "%STARTUP_FILE%" echo powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/techzoneadapter-droid/vibaocode/main/bridge/vibaocode-bridge.mjs' -OutFile '%BRIDGE_FILE%' } catch {}"
 >> "%STARTUP_FILE%" echo start "" /min node "%BRIDGE_FILE%"
 
-echo [4/4] Dang khoi dong Local Bridge...
+echo [4/4] Dang cap nhat va khoi dong Local Bridge...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*vibaocode-bridge.mjs*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {} }"
+timeout /t 1 >nul
 start "Vibaocode Local Bridge" /min node "%BRIDGE_FILE%"
 
 echo.
-echo XONG. Quay lai Vibaocode va bam "Kiem tra Local Bridge".
+echo XONG. Local Bridge cu da duoc thay bang ban moi nhat.
+echo Quay lai Vibaocode va bam "Kiem tra" roi "Ket noi ChatGPT".
 echo Neu Chrome hoi quyen truy cap mang cuc bo, chon Allow/Cho phep.
 echo.
 timeout /t 3 >nul
