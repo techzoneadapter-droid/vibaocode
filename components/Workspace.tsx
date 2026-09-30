@@ -1260,7 +1260,7 @@ export default function Workspace() {
         health = await bridge.bridgeHealth(3000);
       }
 
-      const started = await bridge.startBridgeAuth();
+      const started = health.codexConnected ? await bridge.switchBridgeAuth() : await bridge.startBridgeAuth();
       if (started.connected) {
         setCodexStatus("connected");
         setCodexPhase("complete");
