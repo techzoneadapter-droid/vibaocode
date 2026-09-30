@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 const HOST = "127.0.0.1";
 const PORT = 43127;
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 const allowedOrigins = new Set([
   "https://vibaocode.vercel.app",
   "http://localhost:3000",
@@ -60,6 +60,78 @@ function commandExists(name) {
 
 function npmCmd() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
+}
+
+function npmGlobalRoot() {
+  const result = spawnSync(npmCmd(), ["root", "-g"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) return "";
+  return String(result.stdout || "").trim();
+}
+
+function resolveCodexRunner() {
+  const roots = [];
+  const globalRoot = npmGlobalRoot();
+  if (globalRoot) roots.push(globalRoot);
+
+  if (process.env.APPDATA) {
+    roots.push(path.join(process.env.APPDATA, "npm", "node_modules"));
+  }
+  if (process.env.LOCALAPPDATA) {
+    roots.push(path.join(process.env.LOCALAPPDATA, "npm", "node_modules"));
+  }
+
+  for (const root of roots) {
+    const entry = path.join(root, "@openai", "codex", "bin", "codex.js");
+    if (fs.existsSync(entry)) {
+      return {
+        command: process.execPath,
+        argsPrefix: [entry],
+        display: entry,
+      };
+    }
+  }
+
+  const locator = spawnSync(process.platform === "win32" ? "where" : "which", ["codex"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (locator.status === 0) {
+    const candidates = String(locator.stdout || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    for (const candidate of candidates) {
+      if (!fs.existsSync(candidate)) continue;
+      if (/\.(exe|com)$/i.test(candidate)) {
+        return { command: candidate, argsPrefix: [], display: candidate };
+      }
+    }
+  }
+
+  return null;
+}
+
+function runCodex(args, options = {}) {
+  const runner = resolveCodexRunner();
+  if (!runner) {
+    const error = new Error("Không tìm thấy Codex CLI sau khi cài đặt. Hãy bấm Cài/Cập nhật Local Bridge lại một lần.");
+    error.code = "codex_missing";
+    return Promise.reject(error);
+  }
+  return run(runner.command, [...runner.argsPrefix, ...args], options);
+}
+
+function spawnCodex(args, options = {}) {
+  const runner = resolveCodexRunner();
+  if (!runner) {
+    const error = new Error("Không tìm thấy Codex CLI sau khi cài đặt. Hãy bấm Cài/Cập nhật Local Bridge lại một lần.");
+    error.code = "codex_missing";
+    throw error;
+  }
+  return spawn(runner.command, [...runner.argsPrefix, ...args], {
+    ...options,
+    shell: false,
+  });
 }
 
 function safeName(value) {
@@ -131,12 +203,13 @@ function killTree(pid) {
 }
 
 async function codexConnected() {
-  if (!commandExists("codex")) return { connected: false, detail: "Codex CLI chưa được cài." };
-  const result = await run("codex", ["login", "status"], { timeoutMs: 12000, maxOutput: 12000 }).catch((error) => ({ code: 1, stdout: "", stderr: error.message }));
+  const runner = resolveCodexRunner();
+  if (!runner) return { connected: false, detail: "Codex CLI chưa được cài hoặc chưa tìm thấy npm global path." };
+  const result = await runCodex(["login", "status"], { timeoutMs: 12000, maxOutput: 12000 }).catch((error) => ({ code: 1, stdout: "", stderr: error.message }));
   const detail = (result.stdout + "\n" + result.stderr).trim();
   return {
     connected: result.code === 0 && /logged in using chatgpt/i.test(detail),
-    detail,
+    detail: detail + (detail ? "\n" : "") + "Codex path: " + runner.display,
   };
 }
 
@@ -144,21 +217,25 @@ async function installCodex() {
   if (!commandExists(npmCmd())) throw new Error("Máy chưa có Node.js/npm.");
   const result = await run(npmCmd(), ["install", "-g", "@openai/codex@latest"], { timeoutMs: 300000, maxOutput: 30000 });
   if (result.code !== 0) throw new Error("Không cài được Codex CLI.\n" + (result.stderr || result.stdout));
-  return result.stdout || result.stderr;
+  const runner = resolveCodexRunner();
+  if (!runner) {
+    throw new Error("npm báo cài Codex thành công nhưng Bridge chưa tìm thấy file codex.js trong npm global.");
+  }
+  return (result.stdout || result.stderr || "") + "\nCodex path: " + runner.display;
 }
 
 async function startAuth() {
   const status = await codexConnected();
   if (status.connected) return { status: "connected", connected: true, detail: status.detail };
-  if (!commandExists("codex")) {
-    const error = new Error("Codex CLI chưa được cài.");
+  if (!resolveCodexRunner()) {
+    const error = new Error("Codex CLI chưa được cài hoặc Bridge chưa tìm thấy npm global path.");
     error.code = "codex_missing";
     throw error;
   }
   if (["starting", "waiting"].includes(authState.status)) return { ...authState, connected: false };
 
   authState = { status: "starting", url: "", log: "", error: "" };
-  const child = spawn("codex", ["login"], {
+  const child = spawnCodex(["login"], {
     windowsHide: false,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -422,7 +499,7 @@ async function startAgent({ repo, branch = "main", prompt, model = "", reasoning
   if (validReasoning(reasoning)) args.push("-c", 'model_reasoning_effort="' + reasoning + '"');
   args.push(String(prompt || ""));
 
-  const child = spawn("codex", args, {
+  const child = spawnCodex(args, {
     cwd: dir,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -495,7 +572,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         version: VERSION,
         platform: process.platform,
-        codexInstalled: commandExists("codex"),
+        codexInstalled: Boolean(resolveCodexRunner()),
         codexConnected: login.connected,
         codexDetail: login.detail,
         nodeInstalled: commandExists("node"),
