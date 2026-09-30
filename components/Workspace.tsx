@@ -485,10 +485,7 @@ export default function Workspace() {
       if (data.openAIReasoning) setOpenAIReasoning(data.openAIReasoning);
       if (data.codexModel) setCodexModel(data.codexModel);
       if (data.codexReasoning) setCodexReasoning(data.codexReasoning);
-      if (["codex-account","openai-codex-hybrid"].includes(data.aiProvider)) {
-        setAiProvider("openai-api");
-        setNotice("Bản web đã chuyển khỏi Codex Cloud Sandbox. Hãy dùng OpenAI API hoặc Local Bridge để dùng ChatGPT Plus/Pro.");
-      } else if (["openai-api","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
+      if (["codex-account","openai-api","openai-codex-hybrid","claude-api","gemini-api","xai-api"].includes(data.aiProvider)) {
         setAiProvider(data.aiProvider);
       }
       if (data.anthropicKey) setAnthropicKey(data.anthropicKey);
@@ -1162,81 +1159,129 @@ export default function Workspace() {
   }
 
   async function connectCodexAccount() {
-    setCodexConnecting(false);
-    setCodexStatus("disconnected");
-    setCodexPhase("web-local-required");
-    setCodexVerificationUrl("");
-    setCodexUserCode("");
-    setCodexDetail(
-      "Vibaocode hiện chạy dưới dạng web-hosted app. Đăng nhập ChatGPT Plus/Pro chính thức cho ứng dụng mã nguồn mở cần một callback local trên 127.0.0.1, nên không thể hoàn tất an toàn chỉ bằng tab Vercel. Codex Cloud Sandbox cũ đã bị loại khỏi luồng này."
-    );
-    setAiProvider("openai-api");
+    setCodexConnecting(true);
     setError("");
-    setNotice("Đã chuyển sang OpenAI API — chế độ hoạt động ổn định trên Vibaocode Web.");
-    setSettingsOpen(true);
+    setCodexDetail("");
+    setCodexPhase("bridge-check");
+    setNotice("Đang kiểm tra Vibaocode Local Bridge…");
+
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      let health = await bridge.bridgeHealth(1500);
+
+      if (!health) {
+        setCodexStatus("disconnected");
+        setCodexPhase("bridge-missing");
+        setCodexDetail(
+          "Local Bridge chưa chạy. Tải file cài 1 lần, mở file đó, rồi quay lại Vibaocode. Nếu Chrome hỏi quyền truy cập mạng cục bộ, chọn Cho phép / Allow."
+        );
+        setError("Chưa tìm thấy Vibaocode Local Bridge trên máy.");
+        setNotice("Hãy cài/chạy Local Bridge một lần để dùng ChatGPT Plus/Pro và tăng tốc Run.");
+        return;
+      }
+
+      if (!health.codexInstalled) {
+        setNotice("Đang cài Codex CLI trên máy…");
+        await bridge.installBridgeCodex();
+        health = await bridge.bridgeHealth(3000);
+      }
+
+      const started = await bridge.startBridgeAuth();
+      if (started.connected) {
+        setCodexStatus("connected");
+        setCodexPhase("complete");
+        setCodexDetail(started.detail || "Logged in using ChatGPT");
+        setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
+        setNotice("Đã kết nối ChatGPT/Codex qua Local Bridge");
+        void loadCodexModels(false);
+        return;
+      }
+
+      setCodexStatus("waiting");
+      setCodexPhase("local-browser-login");
+      setCodexVerificationUrl(started.url || "");
+      setCodexDetail(started.detail || "Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.");
+      if (started.url) window.open(started.url, "_blank", "noopener,noreferrer");
+      setNotice("Đang chờ bạn hoàn tất đăng nhập ChatGPT trên máy…");
+
+      for (let i = 0; i < 180; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const status = await bridge.bridgeAuthStatus();
+        if (status.detail) setCodexDetail(status.detail + (status.log ? "\n\n" + status.log.slice(-2500) : ""));
+        if (status.url) setCodexVerificationUrl(status.url);
+        if (status.error) throw new Error(status.error);
+        if (status.connected) {
+          setCodexStatus("connected");
+          setCodexPhase("complete");
+          setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
+          setNotice("Đã kết nối ChatGPT/Codex qua Local Bridge");
+          void loadCodexModels(false);
+          return;
+        }
+      }
+
+      throw new Error("Đăng nhập ChatGPT quá thời gian chờ. Bấm Kết nối lại.");
+    } catch (err) {
+      setCodexStatus("disconnected");
+      setCodexPhase("error");
+      setError(err instanceof Error ? err.message : "Không kết nối được ChatGPT qua Local Bridge.");
+      setNotice("Kết nối ChatGPT chưa hoàn tất");
+    } finally {
+      setCodexConnecting(false);
+    }
   }
 
   async function checkCodexAccount() {
-    setCodexStatus("disconnected");
-    setCodexPhase("web-local-required");
-    setCodexDetail(
-      "ChatGPT Plus/Pro account login is disabled in pure web mode because the official open-source sign-in flow requires a local 127.0.0.1 callback. Use OpenAI API now, or a future Local Bridge for ChatGPT-plan usage."
-    );
-    setNotice("ChatGPT account trực tiếp cần Local Bridge trên máy.");
+    try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(1500);
+      if (!health) {
+        setCodexStatus("disconnected");
+        setCodexPhase("bridge-missing");
+        setCodexDetail("Local Bridge chưa chạy.");
+        setNotice("Không tìm thấy Local Bridge");
+        return;
+      }
+      const data = await bridge.bridgeAuthStatus();
+      setCodexStatus(data.connected ? "connected" : data.status === "waiting" ? "waiting" : "disconnected");
+      setCodexPhase(data.connected ? "complete" : data.status || "idle");
+      setCodexDetail(data.detail || data.log || "");
+      if (data.url) setCodexVerificationUrl(data.url);
+      setNotice(data.connected ? "ChatGPT/Codex đang kết nối qua Local Bridge" : "ChatGPT chưa đăng nhập");
+      if (data.connected) void loadCodexModels(false);
+    } catch (err) {
+      setCodexStatus("disconnected");
+      setError(err instanceof Error ? err.message : "Không kiểm tra được Local Bridge.");
+    }
   }
 
   async function loadCodexUsage(announce = false) {
-    if (!workspaceId) return;
-    setCodexUsageLoading(true);
-    try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "usage" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không đọc được hạn mức Codex.");
-      setCodexUsage(data);
-      if (announce) setNotice("Đã làm mới hạn mức ChatGPT/Codex");
-    } catch (err) {
-      if (announce) setError(err instanceof Error ? err.message : "Không đọc được hạn mức Codex.");
-    } finally {
-      setCodexUsageLoading(false);
+    setCodexUsageLoading(false);
+    if (announce) {
+      setNotice("Hạn mức ChatGPT Plan xem trong ChatGPT → Settings → Usage.");
     }
   }
 
   async function loadCodexModels(announce = false) {
-    if (!workspaceId) return;
     setCodexModelsLoading(true);
     try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "models" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không đọc được danh sách model Codex.");
-
-      const models = Array.isArray(data.models) ? data.models : [];
+      const models: CodexModelOption[] = [{
+        id: "default",
+        model: "",
+        displayName: "Codex mặc định • ChatGPT Plan",
+        isDefault: true,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low" },
+          { reasoningEffort: "medium" },
+          { reasoningEffort: "high" },
+          { reasoningEffort: "xhigh" },
+        ],
+      }];
       setCodexModels(models);
-
-      if (models.length) {
-        const current = models.find((item: CodexModelOption) => item.model === codexModel);
-        const selected = current || models.find((item: CodexModelOption) => item.isDefault) || models[0];
-        if (!current) setCodexModel(selected.model);
-
-        const efforts = Array.isArray(selected.supportedReasoningEfforts)
-          ? selected.supportedReasoningEfforts.map((item: any) => item.reasoningEffort)
-          : [];
-
-        if (efforts.length && !efforts.includes(codexReasoning)) {
-          setCodexReasoning(selected.defaultReasoningEffort || efforts[0]);
-        }
-      }
-
-      if (announce) setNotice(`Đã tải ${models.length} model Codex khả dụng`);
-    } catch (err) {
-      if (announce) setError(err instanceof Error ? err.message : "Không đọc được model Codex.");
+      setCodexModel("");
+      if (!["low","medium","high","xhigh"].includes(codexReasoning)) setCodexReasoning("medium");
+      if (announce) setNotice("Codex sẽ dùng model mặc định của ChatGPT Plan");
     } finally {
       setCodexModelsLoading(false);
     }
@@ -1244,12 +1289,8 @@ export default function Workspace() {
 
   function chooseCodexModel(nextModel: string) {
     setCodexModel(nextModel);
-    const selected = codexModels.find((item) => item.model === nextModel);
-    const efforts = selected?.supportedReasoningEfforts?.map((item) => item.reasoningEffort) || [];
-    if (efforts.length && !efforts.includes(codexReasoning)) {
-      setCodexReasoning(selected?.defaultReasoningEffort || efforts[0]);
-    }
   }
+
 
   async function loadOpenAIModels(announce = false) {
     setOpenAIModelsLoading(true);
@@ -1360,35 +1401,34 @@ export default function Workspace() {
   }
 
   async function diagnoseCodexAccount() {
-    if (!workspaceId) return;
     setCodexDiagnosing(true);
     setError("");
-    setNotice("Đang chẩn đoán Codex CLI và kết nối auth.openai.com…");
-
+    setNotice("Đang kiểm tra Local Bridge, Node, Git và Codex…");
     try {
-      const response = await fetch("/api/agent/codex-auth", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workspaceId, action: "diagnostics" }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được chẩn đoán Codex.");
-
-      const lines = [
-        data.version ? `Codex: ${data.version}` : "",
-        data.source ? `Nguồn CLI: ${data.source}` : "",
-        data.state ? `State: ${JSON.stringify(data.state, null, 2)}` : "",
-        data.loginStatus ? `Login status:\n${data.loginStatus}` : "",
-        data.dns ? `DNS:\n${data.dns}` : "",
-        data.connectivity ? `auth.openai.com:\n${data.connectivity}` : "",
-        data.log ? `App-server log:\n${data.log}` : "",
-      ].filter(Boolean);
-
-      setCodexDetail(lines.join("\n\n"));
-      setNotice("Đã chẩn đoán Codex • mở Chi tiết kỹ thuật để xem kết quả");
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(2500);
+      if (!health) {
+        setCodexDetail(
+          "Không kết nối được http://127.0.0.1:43127. Local Bridge chưa chạy hoặc Chrome đang chặn quyền mạng cục bộ. Nếu Chrome hiện hộp hỏi Local Network Access, hãy chọn Allow/Cho phép."
+        );
+        setCodexPhase("bridge-missing");
+        setNotice("Không tìm thấy Local Bridge");
+        return;
+      }
+      setCodexDetail([
+        `Local Bridge: v${health.version || "?"}`,
+        `Node: ${health.nodeInstalled ? "OK" : "MISSING"}`,
+        `npm: ${health.npmInstalled ? "OK" : "MISSING"}`,
+        `Git: ${health.gitInstalled ? "OK" : "MISSING"}`,
+        `Codex CLI: ${health.codexInstalled ? "OK" : "MISSING"}`,
+        `ChatGPT: ${health.codexConnected ? "CONNECTED" : "NOT CONNECTED"}`,
+        health.codexDetail || "",
+        `Workspace: ${health.workspaceRoot || "?"}`,
+      ].filter(Boolean).join("\n"));
+      setCodexStatus(health.codexConnected ? "connected" : "disconnected");
+      setNotice("Đã chẩn đoán Local Bridge");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Codex diagnostics failed.");
-      setNotice("Chẩn đoán Codex gặp lỗi");
+      setError(err instanceof Error ? err.message : "Local Bridge diagnostics failed.");
     } finally {
       setCodexDiagnosing(false);
     }
