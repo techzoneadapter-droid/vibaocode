@@ -49,6 +49,18 @@ export async function startBridgeAuth() {
   return request("/auth/start", { method: "POST" }, 15000);
 }
 
+export async function switchBridgeAuth() {
+  return request("/auth/switch", { method: "POST" }, 15000);
+}
+
+export async function logoutBridgeAuth() {
+  return request("/auth/logout", { method: "POST" }, 30000);
+}
+
+export async function bridgeModels() {
+  return request("/models?t=" + Date.now(), undefined, 20000);
+}
+
 export async function bridgeAuthStatus() {
   return request("/auth/status?t=" + Date.now(), undefined, 15000);
 }
