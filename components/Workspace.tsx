@@ -570,7 +570,7 @@ export default function Workspace() {
           setTreeItems(data.items || []);
           setRemoteTreeSha(nextSha);
           setNotice("GitHub có bản mới • Vibaocode đang tự cập nhật Preview…");
-          await runCloudProject(true, true);
+          await runCloudProject(false, true, String(data.sha || ""));
           setPreviewKey((value) => value + 1);
           setWorkspaceView("preview");
         }
@@ -1029,7 +1029,11 @@ export default function Workspace() {
     }
   }
 
-  async function runCloudProject(forceRemote = false, skipLoadedCheck = false) {
+  async function runCloudProject(
+    forceRemote = false,
+    skipLoadedCheck = false,
+    expectedShaOverride = "",
+  ) {
     if (!workspaceId || (!skipLoadedCheck && !treeItems.length)) {
       setError("Hãy Load repository trước khi chạy.");
       return false;
@@ -1048,6 +1052,7 @@ export default function Workspace() {
           branch,
           githubToken,
           forceRemote,
+          expectedSha: expectedShaOverride || remoteTreeSha,
         }),
       });
       const data = await response.json();

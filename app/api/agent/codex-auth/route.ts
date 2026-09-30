@@ -3,6 +3,7 @@ import {
   ensureCodexCli,
   getWorkspaceSandbox,
   shell,
+  stopSandboxIfIdle,
 } from "../../../../lib/workspace-sandbox";
 
 export const maxDuration = 180;
@@ -592,6 +593,7 @@ echo $! > ${JSON.stringify(PID_FILE)}
         );
         const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
 
+        await stopSandboxIfIdle(sandbox);
         return NextResponse.json({
           ...state,
           connected,
@@ -603,11 +605,13 @@ echo $! > ${JSON.stringify(PID_FILE)}
       }
 
       if (state) {
+        const detail = await readLog(sandbox);
+        await stopSandboxIfIdle(sandbox);
         return NextResponse.json({
           ...state,
           error: state.error ? normalizeAuthError(String(state.error)) : undefined,
           rawError: state.error || undefined,
-          detail: await readLog(sandbox),
+          detail,
         });
       }
 
@@ -618,6 +622,7 @@ echo $! > ${JSON.stringify(PID_FILE)}
       );
       const connected = /logged in using chatgpt/i.test(status.stdout + status.stderr);
 
+      await stopSandboxIfIdle(sandbox);
       return NextResponse.json({
         status: connected ? "connected" : "disconnected",
         connected,
@@ -646,6 +651,7 @@ echo $! > ${JSON.stringify(PID_FILE)}
       }
 
       const snapshot = await readCodexModels(sandbox, codex);
+      await stopSandboxIfIdle(sandbox);
       return NextResponse.json({
         connected: true,
         version: codex.version,
@@ -675,6 +681,7 @@ echo $! > ${JSON.stringify(PID_FILE)}
       }
 
       const snapshot = await readCodexUsage(sandbox, codex);
+      await stopSandboxIfIdle(sandbox);
       return NextResponse.json({
         connected: true,
         version: codex.version,
@@ -697,6 +704,7 @@ rm -f ${JSON.stringify(STATE_FILE)} ${JSON.stringify(PID_FILE)}
 `,
       );
 
+      await stopSandboxIfIdle(sandbox);
       return NextResponse.json({
         status: "disconnected",
         connected: false,
@@ -723,6 +731,7 @@ rm -f ${JSON.stringify(STATE_FILE)} ${JSON.stringify(PID_FILE)}
       const state = await readState(sandbox);
       const log = await readLog(sandbox);
 
+      await stopSandboxIfIdle(sandbox);
       return NextResponse.json({
         version: codex.version,
         source: codex.source,

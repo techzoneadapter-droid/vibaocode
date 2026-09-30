@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
 import { Sandbox } from "@vercel/sandbox";
 
-const DEFAULT_TIMEOUT = 40 * 60 * 1000;
+// Keep ordinary preview/control sessions short on Hobby. The filesystem is
+// persistent, so a stopped Sandbox resumes from its latest snapshot on demand.
+// Long AI jobs extend the session explicitly via reserveLongAgentSession().
+const DEFAULT_TIMEOUT = 10 * 60 * 1000;
 const SNAPSHOT_EXPIRATION = 24 * 60 * 60 * 1000;
 const PORTS = [3000, 6080, 9222];
 
@@ -90,6 +93,33 @@ export async function shell(
   command: string,
 ) {
   return run(sandbox, "bash", ["-lc", command]);
+}
+
+export async function stopSandboxIfIdle(sandbox: Sandbox) {
+  // Short Codex metadata calls (status/models/usage) used to leave the VM
+  // provisioned for the full session timeout. Stop it immediately when there is
+  // no live preview and no long-running Vibaocode/Codex process. Persistent
+  // Sandboxes keep the filesystem/auth/dependencies and resume on the next call.
+  try {
+    const busy = await shell(
+      sandbox,
+      [
+        "set +e",
+        "if curl -fsS --max-time 1 http://127.0.0.1:3000 >/dev/null 2>&1; then echo BUSY; exit 0; fi",
+        "if ps -eo args= 2>/dev/null | grep -E 'vibaocode-codex-device\\.cjs|vibaocode-codex-runner|codex( |$).*exec|playwright' | grep -v grep >/dev/null 2>&1; then echo BUSY; exit 0; fi",
+        "echo IDLE",
+      ].join("\n"),
+    );
+
+    if (!busy.stdout.includes("IDLE")) {
+      return { stopped: false, reason: "busy" as const };
+    }
+
+    await sandbox.stop();
+    return { stopped: true, reason: "idle" as const };
+  } catch {
+    return { stopped: false, reason: "error" as const };
+  }
 }
 
 export async function ensureCodexCli(sandbox: Sandbox) {
@@ -211,6 +241,7 @@ export async function ensurePublicRepo(
   const dir = repoDirectory(repo, branch);
   const reposRoot = "/vercel/sandbox/repos";
   const remoteUrl = `https://github.com/${repo}.git`;
+  const fetchMarker = `${dir}/.vibaocode-last-fetch`;
 
   const exists = await shell(
     sandbox,
@@ -315,21 +346,31 @@ export async function ensurePublicRepo(
         `Không clone được ${repo}@${branch} vào Cloud Sandbox.\n${detail.slice(-1800)}`,
       );
     }
+    await shell(sandbox, `touch ${JSON.stringify(fetchMarker)}`);
   } else {
-    // Always refresh the remote tracking ref, but never destroy local work merely
-    // because the UI requested a "force remote" preview refresh. Codex can finish
-    // with valuable edits while GitHub auth is missing or quota expires; a hard
-    // reset here used to silently erase that working tree on reload/account swap.
-    let sync = await anonymousFetch();
+    // Avoid repeated network/CPU work when Run → Test → AI happen close together.
+    // A forced GitHub refresh always fetches immediately; otherwise refresh the
+    // remote tracking ref at most once every two minutes.
+    const freshness = await shell(
+      sandbox,
+      `if [ -f ${JSON.stringify(fetchMarker)} ] && find ${JSON.stringify(fetchMarker)} -mmin -2 -print -quit | grep -q .; then echo FRESH; else echo STALE; fi`,
+    );
+    const shouldFetch = Boolean(options.forceRemote) || !freshness.stdout.includes("FRESH");
 
-    if (sync.exitCode !== 0 && authHeader) {
-      sync = (await authenticatedFetch()) || sync;
-    }
+    if (shouldFetch) {
+      let sync = await anonymousFetch();
 
-    if (sync.exitCode !== 0) {
-      throw new Error(
-        `Không đồng bộ được repository trong Cloud Sandbox.\n${(sync.stderr || sync.stdout).slice(-1800)}`,
-      );
+      if (sync.exitCode !== 0 && authHeader) {
+        sync = (await authenticatedFetch()) || sync;
+      }
+
+      if (sync.exitCode !== 0) {
+        throw new Error(
+          `Không đồng bộ được repository trong Cloud Sandbox.\n${(sync.stderr || sync.stdout).slice(-1800)}`,
+        );
+      }
+
+      await shell(sandbox, `touch ${JSON.stringify(fetchMarker)}`);
     }
 
     const meaningfulStatus = await shell(

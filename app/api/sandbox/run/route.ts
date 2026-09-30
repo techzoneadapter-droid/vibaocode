@@ -24,6 +24,7 @@ export async function POST(request: NextRequest) {
     const branch = String(body.branch || "main").trim();
     const githubToken = String(body.githubToken || "").trim();
     const forceRemote = Boolean(body.forceRemote);
+    const expectedSha = String(body.expectedSha || "").trim();
 
     if (!workspaceId || !validRepo(repo) || !validBranch(branch)) {
       return NextResponse.json(
@@ -36,16 +37,58 @@ export async function POST(request: NextRequest) {
     const dir = repoDirectory(repo, branch);
 
     if (action === "start") {
+      let localTree = "";
+      let localHead = "";
+      let serverHealthy = false;
+
+      if (expectedSha) {
+        const state = await shell(
+          sandbox,
+          [
+            `cd ${JSON.stringify(dir)} 2>/dev/null || exit 0`,
+            `LOCAL_TREE="$(git rev-parse 'HEAD^{tree}' 2>/dev/null || true)"`,
+            `LOCAL_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"`,
+            `READY=0`,
+            `curl -fsS --max-time 1 http://127.0.0.1:3000 >/dev/null 2>&1 && READY=1 || true`,
+            `printf 'TREE:%s\\nHEAD:%s\\nREADY:%s\\n' "$LOCAL_TREE" "$LOCAL_HEAD" "$READY"`,
+          ].join(" && "),
+        );
+
+        localTree = state.stdout.match(/TREE:([0-9a-f]{40})/i)?.[1] || "";
+        localHead = state.stdout.match(/HEAD:([0-9a-f]{40})/i)?.[1] || "";
+        serverHealthy = /READY:1/.test(state.stdout);
+
+        // Exact Git tree + healthy server: nothing to fetch/install/restart.
+        if (!forceRemote && localTree === expectedSha && serverHealthy) {
+          const logs = await shell(
+            sandbox,
+            `cd ${JSON.stringify(dir)} && tail -n 80 .vibaocode-dev.log 2>/dev/null || true`,
+          );
+          return NextResponse.json({
+            sandboxName: sandbox.name,
+            previewUrl: sandbox.domain(3000),
+            running: true,
+            logs: logs.stdout,
+            revision: localHead.slice(0, 12),
+            reused: true,
+            saver: "hot-reuse",
+          });
+        }
+      }
+
+      const remoteMismatch = Boolean(expectedSha && localTree && localTree !== expectedSha);
       const ensuredDir = await ensurePublicRepo(
         sandbox,
         repo,
         branch,
         githubToken,
-        { forceRemote },
+        { forceRemote: forceRemote || remoteMismatch },
       );
       await installDependencies(sandbox, ensuredDir);
       await compactWorkspace(sandbox, ensuredDir);
-      const server = await startDevServer(sandbox, ensuredDir, { restart: forceRemote });
+      const server = await startDevServer(sandbox, ensuredDir, {
+        restart: forceRemote || remoteMismatch,
+      });
       const revision = await shell(
         sandbox,
         `cd ${JSON.stringify(ensuredDir)} && git rev-parse --short HEAD 2>/dev/null || true`,
@@ -56,6 +99,8 @@ export async function POST(request: NextRequest) {
         running: server.ok,
         logs: server.logs,
         revision: revision.stdout.trim(),
+        reused: Boolean((server as any).reused),
+        saver: (server as any).reused ? "server-reuse" : "started",
       });
     }
 
