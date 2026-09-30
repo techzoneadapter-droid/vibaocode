@@ -3683,70 +3683,33 @@ export default function Workspace() {
               {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") ? (
                 <div className="account-connect-card">
                   <div>
-                    <strong>{aiProvider === "openai-codex-hybrid" ? "Hybrid • ChatGPT Director + Codex Builder" : "ChatGPT / Codex"}</strong>
+                    <strong>{aiProvider === "openai-codex-hybrid" ? "Hybrid • ChatGPT + Codex" : "ChatGPT / Codex"}</strong>
                     <span className={`connection-state ${codexStatus}`}>
                       {codexStatus === "connected" ? "Đã kết nối" : codexStatus === "waiting" ? "Đang chờ đăng nhập" : "Chưa kết nối"}
                     </span>
                   </div>
-                  {aiProvider === "openai-codex-hybrid" ? (
-                    <div className="codex-settings-model">
-                      <label>
-                        ChatGPT Director model
-                        <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
-                          {openAIModels.map((item) => (
-                            <option key={item.id} value={item.id}>
-                              {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        ChatGPT reasoning
-                        <select value={openAIReasoning} onChange={(e) => setOpenAIReasoning(e.target.value)}>
-                          {(() => {
-                            const selected = openAIModels.find((item) => item.id === model);
-                            const efforts = selected?.reasoning || [];
-                            if (!efforts.length) return <option value="high">high</option>;
-                            return efforts.map((effort) => (
-                              <option key={effort} value={effort}>{effort}</option>
-                            ));
-                          })()}
-                        </select>
-                      </label>
-                      <label>
-                        OpenAI API key
-                        <input
-                          type="password"
-                          value={openAIKey}
-                          onChange={(e) => setOpenAIKey(e.target.value)}
-                          placeholder="sk-…"
-                          autoComplete="off"
-                        />
-                      </label>
-                      <button className="ghost-button" onClick={() => loadOpenAIModels(true)} disabled={openAIModelsLoading} type="button">
-                        {openAIModelsLoading ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
-                        Tải model ChatGPT
-                      </button>
-                      <small>ChatGPT lập kế hoạch/prompt → Codex sửa code, chạy test và tự lưu main khi PASS.</small>
+
+                  {codexStatus === "waiting" ? (
+                    <div className="codex-device-card">
+                      <span className="eyebrow">CHATGPT LOGIN</span>
+                      <span>Hoàn tất đăng nhập ChatGPT trong cửa sổ trình duyệt vừa mở.</span>
+                      {codexVerificationUrl ? (
+                        <a className="primary-button" href={codexVerificationUrl} target="_blank" rel="noreferrer">
+                          Mở lại trang đăng nhập
+                        </a>
+                      ) : null}
                     </div>
                   ) : null}
+
                   {codexStatus === "connected" ? (
                     <div className="codex-device-card">
                       <span className="eyebrow">READY</span>
-                      <strong>
-                        {codexModels.find((item) => item.model === codexModel)?.displayName || "ChatGPT Plan • tự động"}
-                      </strong>
-                      <span>Vibaocode sẽ tự dùng model mặc định phù hợp. Không cần chọn gì thêm.</span>
+                      <strong>{codexModels.find((item) => item.model === codexModel)?.displayName || "ChatGPT Plan • tự động"}</strong>
+                      <span>Vibaocode tự dùng model mặc định phù hợp. Không cần chọn gì thêm.</span>
                     </div>
                   ) : null}
-                  {codexStatus === "waiting" ? (
-                    <div className="codex-device-card">
-                      <span className="eyebrow">LOCAL CHATGPT LOGIN</span>
-                      {codexUserCode ? (
-                        <>
-                          <strong className="codex-device-code">{codexUserCode}</strong>
-                          <span>Hoàn tất đăng nhập ChatGPT trong trình duyệt.</span>
-                          <div className="account-actions">
+
+                  <div className="account-actions">
                     <button
                       className="primary-button"
                       onClick={connectCodexAccount}
@@ -3761,10 +3724,35 @@ export default function Workspace() {
                   <details className="codex-auth-detail">
                     <summary>Nâng cao</summary>
                     <div className="codex-settings-model">
+                      {aiProvider === "openai-codex-hybrid" ? (
+                        <>
+                          <label>
+                            ChatGPT Director model
+                            <select value={model} onChange={(e) => chooseOpenAIModel(e.target.value)} disabled={openAIModelsLoading}>
+                              {openAIModels.map((item) => (
+                                <option key={item.id} value={item.id}>
+                                  {item.label || item.id}{item.recommended ? " • khuyên dùng" : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            OpenAI API key
+                            <input
+                              type="password"
+                              value={openAIKey}
+                              onChange={(e) => setOpenAIKey(e.target.value)}
+                              placeholder="sk-…"
+                              autoComplete="off"
+                            />
+                          </label>
+                        </>
+                      ) : null}
+
                       {codexStatus === "connected" ? (
                         <>
                           <label>
-                            Model
+                            Codex model
                             <select value={codexModel} onChange={(e) => chooseCodexModel(e.target.value)} disabled={codexModelsLoading || !codexModels.length}>
                               {codexModelsLoading ? <option value="">Đang tải model…</option> : null}
                               {!codexModelsLoading && !codexModels.length ? <option value="">Tự động</option> : null}
@@ -3799,6 +3787,7 @@ export default function Workspace() {
                           </button>
                         </>
                       ) : null}
+
                       <a className="ghost-button" href="/start-vibaocode-bridge.cmd" download>
                         Cài lại helper nền
                       </a>
@@ -3812,7 +3801,7 @@ export default function Workspace() {
                   </details>
 
                   <p className="settings-hint">
-                    Sau khi helper nền được cài một lần, Vibaocode tự chạy ngầm, tự bật cùng Windows và tự cập nhật. Luồng bình thường chỉ cần bấm “Kết nối ChatGPT”.
+                    Bình thường bạn chỉ cần bấm “Kết nối ChatGPT”. Helper nền sẽ tự chạy cùng Windows và tự cập nhật.
                   </p>
                 </div>
               ) : aiProvider === "claude-api" ? (
