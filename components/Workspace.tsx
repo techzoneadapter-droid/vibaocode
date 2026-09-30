@@ -1048,6 +1048,7 @@ export default function Workspace() {
           branch,
           githubToken,
           forceRemote,
+          expectedSha: remoteTreeSha,
         }),
       });
       const data = await response.json();
