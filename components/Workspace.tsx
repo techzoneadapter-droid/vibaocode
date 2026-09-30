@@ -1036,8 +1036,29 @@ export default function Workspace() {
     }
     setRunLoading(true);
     setError("");
-    setNotice("Browser Local Runtime đang tải và chạy dự án trên máy…");
+    setNotice("Đang kiểm tra Local Bridge…");
     try {
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        setNotice("Local Bridge đang mở project trực tiếp trên SSD/RAM máy…");
+        const data = await bridge.startBridgeProject({ repo, branch, githubToken, forceRemote });
+        setSandboxName("LOCAL BRIDGE");
+        setSandboxRevision("local");
+        setSandboxRunning(Boolean(data.running));
+        setRunLogs(data.logs || "");
+        if (data.previewUrl) {
+          setPreviewUrl(data.previewUrl);
+          setPreviewMode("url");
+          setPreviewKey((value) => value + 1);
+          setWorkspaceView("preview");
+        }
+        setNotice(data.running ? "Dự án đang chạy trực tiếp trên máy • Local Bridge" : "Server local chưa sẵn sàng");
+        return Boolean(data.running);
+      }
+
+      setNotice("Local Bridge chưa chạy • dùng Browser Runtime dự phòng…");
       const runtime = await import("../lib/browser-runtime");
       const data = await runtime.startBrowserProject({ repo, branch, githubToken, forceRemote });
       setSandboxName(data.sandboxName || "BROWSER LOCAL");
@@ -1050,11 +1071,15 @@ export default function Workspace() {
         setPreviewKey((value) => value + 1);
         setWorkspaceView("preview");
       }
-      setNotice(data.running ? "Dự án đang chạy bằng CPU/RAM của máy" : "Server chưa sẵn sàng");
+      setNotice(
+        data.running
+          ? "Dự án đang chạy bằng Browser Runtime • cài Local Bridge để lần sau khởi động nhanh hơn"
+          : "Server chưa sẵn sàng"
+      );
       return Boolean(data.running);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browser Local Run failed.");
-      setNotice("Browser Local Run thất bại");
+      setError(err instanceof Error ? err.message : "Local Run failed.");
+      setNotice("Local Run thất bại");
       return false;
     } finally {
       setRunLoading(false);
@@ -1064,9 +1089,15 @@ export default function Workspace() {
   async function syncDraft(path: string, content: string) {
     if (!workspaceId || !sandboxRunning) return;
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
-      if (!synced) return;
+      if (sandboxName === "LOCAL BRIDGE") {
+        const bridge = await import("../lib/local-bridge-client");
+        const data = await bridge.syncBridgeFiles({ repo, branch, files: [{ path, content }] });
+        if (!data.synced) return;
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
+        if (!synced) return;
+      }
       setPreviewKey((value) => value + 1);
       setNotice(`Live Preview đã cập nhật local • ${path}`);
     } catch (err) {
@@ -1082,12 +1113,22 @@ export default function Workspace() {
     setTestLoading(true);
     setError("");
     setWorkspaceView("preview");
-    setNotice("Auto Test đang chạy local: dependencies → server → typecheck/lint/test/build…");
+    setNotice("Auto Test đang chạy local…");
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
-      setSandboxName(data.sandboxName || "BROWSER LOCAL");
-      setSandboxRunning(Boolean(data.serverRunning));
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+      let data: any;
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        data = await bridge.testBridgeProject({ repo, branch, githubToken });
+        setSandboxName("LOCAL BRIDGE");
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+        setSandboxName("BROWSER LOCAL");
+      }
+
+      setSandboxRunning(Boolean(data.serverRunning ?? true));
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setPreviewMode("url");
@@ -1099,7 +1140,7 @@ export default function Workspace() {
       lines.push(...(data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
       ));
-      lines.push(`Runtime: Browser Local • ${data.smokeStatus || "ready"}`);
+      lines.push(`Runtime: ${health?.ok ? "Local Bridge" : "Browser Local"} • ${data.smokeStatus || "ready"}`);
       setTestSummary(lines.join("\n\n"));
       setRunLogs(data.serverLogs || runLogs);
       setNotice(data.passed ? "Tester local: PASS" : "Tester local phát hiện lỗi");
@@ -1110,6 +1151,7 @@ export default function Workspace() {
       setTestLoading(false);
     }
   }
+
   async function playTestProject() {
     if (!workspaceId || !treeItems.length) {
       setError("Hãy Load repository trước khi chạy Local QA.");
@@ -1122,10 +1164,21 @@ export default function Workspace() {
     setPlayReport("");
     setVisualReview("");
     setError("");
-    setNotice("Local QA đang chạy trực tiếp trong Browser Runtime…");
+    setNotice("Local QA đang chạy trên máy…");
     try {
-      const runtime = await import("../lib/browser-runtime");
-      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+      const bridge = await import("../lib/local-bridge-client");
+      const health = await bridge.bridgeHealth(700);
+      let data: any;
+
+      if (health?.ok && health.nodeInstalled && health.gitInstalled) {
+        data = await bridge.testBridgeProject({ repo, branch, githubToken });
+        setSandboxName("LOCAL BRIDGE");
+      } else {
+        const runtime = await import("../lib/browser-runtime");
+        data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+        setSandboxName("BROWSER LOCAL");
+      }
+
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
         setSandboxRunning(true);
@@ -1133,12 +1186,11 @@ export default function Workspace() {
         setPreviewView("live");
         setPreviewKey((value) => value + 1);
       }
-      setSandboxName("BROWSER LOCAL");
       const checkLines = (data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}: ${check.exitCode === 0 ? "PASS" : "FAIL"}`
       );
       setPlayReport([
-        "Runtime: Browser Local",
+        `Runtime: ${health?.ok ? "Local Bridge" : "Browser Local"}`,
         `Dev server: ${data.serverRunning ? "RUNNING" : "STOPPED"}`,
         `Kết quả: ${data.passed ? "PASS" : "FAIL"}`,
         ...checkLines,
@@ -1152,6 +1204,7 @@ export default function Workspace() {
       setPlayTestLoading(false);
     }
   }
+
   async function openReview() {
     if (!sandboxRunning) await runCloudProject();
     setTab("diff");
