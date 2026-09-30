@@ -1261,7 +1261,17 @@ export default function Workspace() {
         if (!health) throw new Error("Local Bridge mất kết nối sau khi cài Codex.");
       }
 
-      const started = health.codexConnected ? await bridge.switchBridgeAuth() : await bridge.startBridgeAuth();
+      if (health.codexConnected) {
+        setCodexStatus("connected");
+        setCodexPhase("complete");
+        setCodexDetail(health.codexDetail || "Logged in using ChatGPT");
+        setAiProvider((current) => current === "openai-codex-hybrid" ? current : "codex-account");
+        setNotice("Đã kết nối ChatGPT/Codex qua Local Bridge");
+        void loadCodexModels(false);
+        return;
+      }
+
+      const started = await bridge.startBridgeAuth();
       if (started.connected) {
         setCodexStatus("connected");
         setCodexPhase("complete");
@@ -3022,6 +3032,58 @@ export default function Workspace() {
                   <Settings size={13} /> Connect
                 </button>
               </div>
+
+              {(aiProvider === "codex-account" || aiProvider === "openai-codex-hybrid") && codexStatus === "connected" ? (
+                <div className="ai-model-card">
+                  <div className="ai-card-title">
+                    <span>CODEX MODEL</span>
+                    <button
+                      className="mini-link"
+                      onClick={() => loadCodexModels(true)}
+                      disabled={codexModelsLoading}
+                      type="button"
+                    >
+                      {codexModelsLoading ? <Loader2 className="spin" size={12} /> : <RefreshCw size={12} />}
+                      Làm mới
+                    </button>
+                  </div>
+                  <label>
+                    Model
+                    <select
+                      value={codexModel}
+                      onChange={(e) => chooseCodexModel(e.target.value)}
+                      disabled={codexModelsLoading || !codexModels.length}
+                    >
+                      {codexModelsLoading ? <option value="">Đang tải model…</option> : null}
+                      {!codexModelsLoading && !codexModels.length ? <option value="">Tự động</option> : null}
+                      {codexModels.map((item) => (
+                        <option key={item.model} value={item.model}>
+                          {item.displayName}{item.isDefault ? " • mặc định" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Reasoning
+                    <select
+                      value={codexReasoning}
+                      onChange={(e) => setCodexReasoning(e.target.value)}
+                      disabled={!codexModel}
+                    >
+                      {(() => {
+                        const selected = codexModels.find((item) => item.model === codexModel);
+                        const efforts = selected?.supportedReasoningEfforts || [];
+                        if (!efforts.length) return <option value={codexReasoning || "medium"}>{codexReasoning || "medium"}</option>;
+                        return efforts.map((item) => (
+                          <option key={item.reasoningEffort} value={item.reasoningEffort}>
+                            {item.reasoningEffort}{item.reasoningEffort === selected?.defaultReasoningEffort ? " • mặc định" : ""}
+                          </option>
+                        ));
+                      })()}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
 
 
               {(aiProvider === "openai-api" || aiProvider === "openai-codex-hybrid") ? (
