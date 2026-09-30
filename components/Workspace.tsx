@@ -1036,24 +1036,12 @@ export default function Workspace() {
     }
     setRunLoading(true);
     setError("");
-    setNotice("Cloud Sandbox đang cài và chạy dự án…");
+    setNotice("Browser Local Runtime đang tải và chạy dự án trên máy…");
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "start",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-          forceRemote,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được dự án.");
-      setSandboxName(data.sandboxName || "");
-      setSandboxRevision(data.revision || "");
+      const runtime = await import("../lib/browser-runtime");
+      const data = await runtime.startBrowserProject({ repo, branch, githubToken, forceRemote });
+      setSandboxName(data.sandboxName || "BROWSER LOCAL");
+      setSandboxRevision(data.revision || "browser");
       setSandboxRunning(Boolean(data.running));
       setRunLogs(data.logs || "");
       if (data.previewUrl) {
@@ -1062,11 +1050,11 @@ export default function Workspace() {
         setPreviewKey((value) => value + 1);
         setWorkspaceView("preview");
       }
-      setNotice(data.running ? "Dự án đang chạy trong Cloud Sandbox" : "Server chưa sẵn sàng");
+      setNotice(data.running ? "Dự án đang chạy bằng CPU/RAM của máy" : "Server chưa sẵn sàng");
       return Boolean(data.running);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Cloud Run failed.");
-      setNotice("Cloud Run thất bại");
+      setError(err instanceof Error ? err.message : "Browser Local Run failed.");
+      setNotice("Browser Local Run thất bại");
       return false;
     } finally {
       setRunLoading(false);
@@ -1076,25 +1064,13 @@ export default function Workspace() {
   async function syncDraft(path: string, content: string) {
     if (!workspaceId || !sandboxRunning) return;
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "sync",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-          files: [{ path, content }],
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Live sync failed.");
-      if (data.previewUrl) setPreviewUrl(data.previewUrl);
+      const runtime = await import("../lib/browser-runtime");
+      const synced = await runtime.writeBrowserFiles(repo, branch, [{ path, content }]);
+      if (!synced) return;
       setPreviewKey((value) => value + 1);
-      setNotice(`Live Preview đã cập nhật • ${path}`);
+      setNotice(`Live Preview đã cập nhật local • ${path}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Live sync failed.");
+      setError(err instanceof Error ? err.message : "Live sync local failed.");
     }
   }
 
@@ -1106,22 +1082,11 @@ export default function Workspace() {
     setTestLoading(true);
     setError("");
     setWorkspaceView("preview");
-    setNotice("Auto Test đang chuẩn bị dependencies → server → typecheck/lint/test/build → smoke…");
+    setNotice("Auto Test đang chạy local: dependencies → server → typecheck/lint/test/build…");
     try {
-      const response = await fetch("/api/sandbox/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "test",
-          workspaceId,
-          repo,
-          branch,
-          githubToken,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Không chạy được test.");
-      setSandboxName(data.sandboxName || sandboxName);
+      const runtime = await import("../lib/browser-runtime");
+      const data = await runtime.runBrowserChecks({ repo, branch, githubToken });
+      setSandboxName(data.sandboxName || "BROWSER LOCAL");
       setSandboxRunning(Boolean(data.serverRunning));
       if (data.previewUrl) {
         setPreviewUrl(data.previewUrl);
@@ -1134,18 +1099,17 @@ export default function Workspace() {
       lines.push(...(data.checks || []).map(
         (check: any) => `${check.exitCode === 0 ? "✓" : "✗"} ${check.name}\n${(check.stderr || check.stdout || "").slice(-2500)}`
       ));
-      lines.push(`HTTP smoke: ${data.smokeStatus || "unknown"}`);
+      lines.push(`Runtime: Browser Local • ${data.smokeStatus || "ready"}`);
       setTestSummary(lines.join("\n\n"));
       setRunLogs(data.serverLogs || runLogs);
-      setNotice(data.passed ? "Tester: PASS" : "Tester phát hiện lỗi");
+      setNotice(data.passed ? "Tester local: PASS" : "Tester local phát hiện lỗi");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Tester failed.");
-      setNotice("Tester gặp lỗi");
+      setError(err instanceof Error ? err.message : "Tester local failed.");
+      setNotice("Tester local gặp lỗi");
     } finally {
       setTestLoading(false);
     }
   }
-
   async function playTestProject() {
     if (!workspaceId || !treeItems.length) {
       setError("Hãy Load repository trước khi play test.");
