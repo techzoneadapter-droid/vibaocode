@@ -289,6 +289,21 @@ export async function ensurePublicRepo(
     );
   }
 
+  async function clearStaleGitLocks() {
+    const result = await shell(
+      sandbox,
+      [
+        `cd ${JSON.stringify(dir)} 2>/dev/null || exit 0`,
+        // Only remove locks when no real Git process is alive in this Sandbox.
+        `if pgrep -x git >/dev/null 2>&1 || pgrep -x git-remote-http >/dev/null 2>&1 || pgrep -x git-remote-https >/dev/null 2>&1; then echo GIT_BUSY; exit 0; fi`,
+        `rm -f .git/shallow.lock .git/index.lock .git/HEAD.lock .git/config.lock .git/packed-refs.lock`,
+        `find .git/refs -name '*.lock' -type f -delete 2>/dev/null || true`,
+        `echo LOCKS_CLEARED`,
+      ].join(" && "),
+    );
+    return result.stdout.includes("LOCKS_CLEARED");
+  }
+
   async function anonymousFetch() {
     return shell(
       sandbox,
@@ -358,7 +373,21 @@ export async function ensurePublicRepo(
     const shouldFetch = Boolean(options.forceRemote) || !freshness.stdout.includes("FRESH");
 
     if (shouldFetch) {
+      await clearStaleGitLocks();
       let sync = await anonymousFetch();
+
+      if (
+        sync.exitCode !== 0 &&
+        /(?:shallow|index|HEAD|config|packed-refs|refs\/.*)\.lock|another git process/i.test(
+          `${sync.stderr}\n${sync.stdout}`,
+        )
+      ) {
+        const cleared = await clearStaleGitLocks();
+        if (cleared) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          sync = await anonymousFetch();
+        }
+      }
 
       if (sync.exitCode !== 0 && authHeader) {
         sync = (await authenticatedFetch()) || sync;
