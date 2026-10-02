@@ -512,16 +512,16 @@ function githubRepoFromRemote(remoteUrl: string) {
     normalized.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/i) ||
     normalized.match(/^git@github\.com:([^/]+)\/([^/]+)$/i) ||
     normalized.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+)$/i);
-  if (!match) throw new Error(\`Không nhận diện được GitHub repository từ origin: \${remoteUrl.trim()}\`);
+  if (!match) throw new Error(`Không nhận diện được GitHub repository từ origin: ${remoteUrl.trim()}`);
   return { owner: match[1], repo: match[2] };
 }
 
 async function githubApiJson<T>(token: string, path: string, init: RequestInit = {}) {
-  const response = await fetch(\`https://api.github.com\${path}\`, {
+  const response = await fetch(`https://api.github.com${path}`, {
     ...init,
     headers: {
       Accept: "application/vnd.github+json",
-      Authorization: \`Bearer \${token}\`,
+      Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "Vibaocode",
       ...(init.headers || {}),
@@ -530,7 +530,7 @@ async function githubApiJson<T>(token: string, path: string, init: RequestInit =
   const raw = await response.text();
   let body: any = {};
   try { body = raw ? JSON.parse(raw) : {}; } catch { body = { message: raw }; }
-  if (!response.ok) throw new Error(\`GitHub API \${response.status}: \${String(body?.message || raw || response.status)}\`);
+  if (!response.ok) throw new Error(`GitHub API ${response.status}: ${String(body?.message || raw || response.status)}`);
   return body as T;
 }
 
@@ -541,7 +541,7 @@ async function pushWorkspaceTreeViaGitHubApi(
   token: string,
   commitMessage: string,
 ) {
-  const remoteResult = await shell(sandbox, \`cd \${JSON.stringify(dir)} && git remote get-url origin\`);
+  const remoteResult = await shell(sandbox, `cd ${JSON.stringify(dir)} && git remote get-url origin`);
   if (remoteResult.exitCode !== 0 || !remoteResult.stdout.trim()) {
     throw new Error("Không đọc được origin URL để dùng GitHub API fallback.");
   }
@@ -552,32 +552,32 @@ async function pushWorkspaceTreeViaGitHubApi(
 
   const ref = await githubApiJson<{ object?: { sha?: string } }>(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/ref/heads/\${encodedBranch}\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodedBranch}`,
   );
   const remoteSha = String(ref?.object?.sha || "");
   if (!remoteSha) throw new Error("GitHub API không trả remote branch SHA.");
 
   const remoteCommit = await githubApiJson<{ tree?: { sha?: string } }>(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/commits/\${encodeURIComponent(remoteSha)}\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/commits/${encodeURIComponent(remoteSha)}`,
   );
   const baseTree = String(remoteCommit?.tree?.sha || "");
   if (!baseTree) throw new Error("GitHub API không trả base tree SHA.");
 
   const diff = await shell(
     sandbox,
-    \`cd \${JSON.stringify(dir)} && git diff --name-status --no-renames \${JSON.stringify(remoteSha)} HEAD\`,
+    `cd ${JSON.stringify(dir)} && git diff --name-status --no-renames ${JSON.stringify(remoteSha)} HEAD`,
   );
   if (diff.exitCode !== 0) {
-    throw new Error(\`Không đọc được tree diff cho GitHub API fallback.\\n\${(diff.stderr || diff.stdout || "").slice(-1600)}\`);
+    throw new Error(`Không đọc được tree diff cho GitHub API fallback.\n${(diff.stderr || diff.stdout || "").slice(-1600)}`);
   }
 
   const changes = diff.stdout
-    .split("\\n")
+    .split("\n")
     .map((line) => line.trimEnd())
     .filter(Boolean)
     .map((line) => {
-      const tab = line.indexOf("\\t");
+      const tab = line.indexOf("\t");
       if (tab < 0) return null;
       return { status: line.slice(0, tab).trim(), path: line.slice(tab + 1) };
     })
@@ -602,10 +602,10 @@ async function pushWorkspaceTreeViaGitHubApi(
 
     const treeLine = await shell(
       sandbox,
-      \`cd \${JSON.stringify(dir)} && git ls-tree HEAD -- \${JSON.stringify(change.path)}\`,
+      `cd ${JSON.stringify(dir)} && git ls-tree HEAD -- ${JSON.stringify(change.path)}`,
     );
     const match = treeLine.stdout.match(/^(100644|100755|120000|160000)\s+(blob|commit)\s+([0-9a-f]{40})\t/);
-    if (!match) throw new Error(\`Git tree mode không được hỗ trợ: \${change.path}\`);
+    if (!match) throw new Error(`Git tree mode không được hỗ trợ: ${change.path}`);
 
     const mode = match[1] as "100644" | "100755" | "120000" | "160000";
     const type = match[2] as "blob" | "commit";
@@ -614,25 +614,25 @@ async function pushWorkspaceTreeViaGitHubApi(
       continue;
     }
 
-    const buffer = await sandbox.readFileToBuffer({ path: \`\${dir}/\${change.path}\` });
-    if (!buffer) throw new Error(\`Không đọc được file trong Sandbox: \${change.path}\`);
+    const buffer = await sandbox.readFileToBuffer({ path: `${dir}/${change.path}` });
+    if (!buffer) throw new Error(`Không đọc được file trong Sandbox: ${change.path}`);
 
     const blob = await githubApiJson<{ sha?: string }>(
       token,
-      \`/repos/\${encodedOwner}/\${encodedRepo}/git/blobs\`,
+      `/repos/${encodedOwner}/${encodedRepo}/git/blobs`,
       {
         method: "POST",
         body: JSON.stringify({ content: buffer.toString("base64"), encoding: "base64" }),
       },
     );
     const blobSha = String(blob?.sha || "");
-    if (!blobSha) throw new Error(\`GitHub không tạo được blob: \${change.path}\`);
+    if (!blobSha) throw new Error(`GitHub không tạo được blob: ${change.path}`);
     treeEntries.push({ path: change.path, mode, type: "blob", sha: blobSha });
   }
 
   const tree = await githubApiJson<{ sha?: string }>(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/trees\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/trees`,
     { method: "POST", body: JSON.stringify({ base_tree: baseTree, tree: treeEntries }) },
   );
   const treeSha = String(tree?.sha || "");
@@ -640,7 +640,7 @@ async function pushWorkspaceTreeViaGitHubApi(
 
   const commit = await githubApiJson<{ sha?: string }>(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/commits\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/commits`,
     { method: "POST", body: JSON.stringify({ message: commitMessage, tree: treeSha, parents: [remoteSha] }) },
   );
   const createdCommitSha = String(commit?.sha || "");
@@ -648,13 +648,13 @@ async function pushWorkspaceTreeViaGitHubApi(
 
   await githubApiJson(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/refs/heads/\${encodedBranch}\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/refs/heads/${encodedBranch}`,
     { method: "PATCH", body: JSON.stringify({ sha: createdCommitSha, force: false }) },
   );
 
   const verifyRef = await githubApiJson<{ object?: { sha?: string } }>(
     token,
-    \`/repos/\${encodedOwner}/\${encodedRepo}/git/ref/heads/\${encodedBranch}\`,
+    `/repos/${encodedOwner}/${encodedRepo}/git/ref/heads/${encodedBranch}`,
   );
   const verifiedSha = String(verifyRef?.object?.sha || "");
   if (verifiedSha !== createdCommitSha) throw new Error("GitHub API verify branch thất bại.");
@@ -662,7 +662,7 @@ async function pushWorkspaceTreeViaGitHubApi(
   return {
     remoteSha: verifiedSha,
     changedFiles: treeEntries.length,
-    output: \`GitHub API fallback đã push \${treeEntries.length} file.\`,
+    output: `GitHub API fallback đã push ${treeEntries.length} file.`,
   };
 }
 
