@@ -505,6 +505,167 @@ export async function checkpointWorkspaceChanges(
   return { committed: true, sha: head.stdout.trim(), files };
 }
 
+
+function githubRepoFromRemote(remoteUrl: string) {
+  const normalized = remoteUrl.trim().replace(/\.git$/, "");
+  const match =
+    normalized.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)$/i) ||
+    normalized.match(/^git@github\.com:([^/]+)\/([^/]+)$/i) ||
+    normalized.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+)$/i);
+  if (!match) throw new Error(\`Không nhận diện được GitHub repository từ origin: \${remoteUrl.trim()}\`);
+  return { owner: match[1], repo: match[2] };
+}
+
+async function githubApiJson<T>(token: string, path: string, init: RequestInit = {}) {
+  const response = await fetch(\`https://api.github.com\${path}\`, {
+    ...init,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: \`Bearer \${token}\`,
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "Vibaocode",
+      ...(init.headers || {}),
+    },
+  });
+  const raw = await response.text();
+  let body: any = {};
+  try { body = raw ? JSON.parse(raw) : {}; } catch { body = { message: raw }; }
+  if (!response.ok) throw new Error(\`GitHub API \${response.status}: \${String(body?.message || raw || response.status)}\`);
+  return body as T;
+}
+
+async function pushWorkspaceTreeViaGitHubApi(
+  sandbox: Sandbox,
+  dir: string,
+  branch: string,
+  token: string,
+  commitMessage: string,
+) {
+  const remoteResult = await shell(sandbox, \`cd \${JSON.stringify(dir)} && git remote get-url origin\`);
+  if (remoteResult.exitCode !== 0 || !remoteResult.stdout.trim()) {
+    throw new Error("Không đọc được origin URL để dùng GitHub API fallback.");
+  }
+  const { owner, repo } = githubRepoFromRemote(remoteResult.stdout);
+  const encodedOwner = encodeURIComponent(owner);
+  const encodedRepo = encodeURIComponent(repo);
+  const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
+
+  const ref = await githubApiJson<{ object?: { sha?: string } }>(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/ref/heads/\${encodedBranch}\`,
+  );
+  const remoteSha = String(ref?.object?.sha || "");
+  if (!remoteSha) throw new Error("GitHub API không trả remote branch SHA.");
+
+  const remoteCommit = await githubApiJson<{ tree?: { sha?: string } }>(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/commits/\${encodeURIComponent(remoteSha)}\`,
+  );
+  const baseTree = String(remoteCommit?.tree?.sha || "");
+  if (!baseTree) throw new Error("GitHub API không trả base tree SHA.");
+
+  const diff = await shell(
+    sandbox,
+    \`cd \${JSON.stringify(dir)} && git diff --name-status --no-renames \${JSON.stringify(remoteSha)} HEAD\`,
+  );
+  if (diff.exitCode !== 0) {
+    throw new Error(\`Không đọc được tree diff cho GitHub API fallback.\\n\${(diff.stderr || diff.stdout || "").slice(-1600)}\`);
+  }
+
+  const changes = diff.stdout
+    .split("\\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const tab = line.indexOf("\\t");
+      if (tab < 0) return null;
+      return { status: line.slice(0, tab).trim(), path: line.slice(tab + 1) };
+    })
+    .filter((item): item is { status: string; path: string } => Boolean(item?.path));
+
+  if (!changes.length) {
+    return { remoteSha, changedFiles: 0, output: "Remote tree đã trùng Sandbox tree." };
+  }
+
+  const treeEntries: Array<{
+    path: string;
+    mode: "100644" | "100755" | "120000" | "160000";
+    type: "blob" | "commit";
+    sha: string | null;
+  }> = [];
+
+  for (const change of changes) {
+    if (change.status.startsWith("D")) {
+      treeEntries.push({ path: change.path, mode: "100644", type: "blob", sha: null });
+      continue;
+    }
+
+    const treeLine = await shell(
+      sandbox,
+      \`cd \${JSON.stringify(dir)} && git ls-tree HEAD -- \${JSON.stringify(change.path)}\`,
+    );
+    const match = treeLine.stdout.match(/^(100644|100755|120000|160000)\s+(blob|commit)\s+([0-9a-f]{40})\t/);
+    if (!match) throw new Error(\`Git tree mode không được hỗ trợ: \${change.path}\`);
+
+    const mode = match[1] as "100644" | "100755" | "120000" | "160000";
+    const type = match[2] as "blob" | "commit";
+    if (type === "commit") {
+      treeEntries.push({ path: change.path, mode, type, sha: match[3] });
+      continue;
+    }
+
+    const buffer = await sandbox.readFileToBuffer({ path: \`\${dir}/\${change.path}\` });
+    if (!buffer) throw new Error(\`Không đọc được file trong Sandbox: \${change.path}\`);
+
+    const blob = await githubApiJson<{ sha?: string }>(
+      token,
+      \`/repos/\${encodedOwner}/\${encodedRepo}/git/blobs\`,
+      {
+        method: "POST",
+        body: JSON.stringify({ content: buffer.toString("base64"), encoding: "base64" }),
+      },
+    );
+    const blobSha = String(blob?.sha || "");
+    if (!blobSha) throw new Error(\`GitHub không tạo được blob: \${change.path}\`);
+    treeEntries.push({ path: change.path, mode, type: "blob", sha: blobSha });
+  }
+
+  const tree = await githubApiJson<{ sha?: string }>(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/trees\`,
+    { method: "POST", body: JSON.stringify({ base_tree: baseTree, tree: treeEntries }) },
+  );
+  const treeSha = String(tree?.sha || "");
+  if (!treeSha) throw new Error("GitHub API không tạo được tree.");
+
+  const commit = await githubApiJson<{ sha?: string }>(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/commits\`,
+    { method: "POST", body: JSON.stringify({ message: commitMessage, tree: treeSha, parents: [remoteSha] }) },
+  );
+  const createdCommitSha = String(commit?.sha || "");
+  if (!createdCommitSha) throw new Error("GitHub API không tạo được commit.");
+
+  await githubApiJson(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/refs/heads/\${encodedBranch}\`,
+    { method: "PATCH", body: JSON.stringify({ sha: createdCommitSha, force: false }) },
+  );
+
+  const verifyRef = await githubApiJson<{ object?: { sha?: string } }>(
+    token,
+    \`/repos/\${encodedOwner}/\${encodedRepo}/git/ref/heads/\${encodedBranch}\`,
+  );
+  const verifiedSha = String(verifyRef?.object?.sha || "");
+  if (verifiedSha !== createdCommitSha) throw new Error("GitHub API verify branch thất bại.");
+
+  return {
+    remoteSha: verifiedSha,
+    changedFiles: treeEntries.length,
+    output: \`GitHub API fallback đã push \${treeEntries.length} file.\`,
+  };
+}
+
 export async function pushWorkspaceHead(
   sandbox: Sandbox,
   dir: string,
@@ -667,19 +828,69 @@ export async function pushWorkspaceHead(
   );
 
   if (push.exitCode !== 0) {
+    let apiFallbackError = "";
+    try {
+      const fallback = await pushWorkspaceTreeViaGitHubApi(
+        sandbox,
+        dir,
+        branch,
+        token,
+        "Vibaocode: publish current Sandbox state",
+      );
+
+      const refresh = await shell(
+        sandbox,
+        [
+          \`cd \${JSON.stringify(dir)}\`,
+          \`GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=\${JSON.stringify(authHeader)} fetch origin \${JSON.stringify(branch)} --depth=100\`,
+        ].join(" && "),
+      );
+
+      if (refresh.exitCode === 0) {
+        await shell(
+          sandbox,
+          \`cd \${JSON.stringify(dir)} && git reset --hard origin/\${JSON.stringify(branch)}\`,
+        );
+      }
+
+      stashRestored = await restoreStash();
+
+      return {
+        originalLocalSha,
+        localSha: fallback.remoteSha,
+        remoteBeforeSha,
+        remoteSha: fallback.remoteSha,
+        verified: true,
+        reconciled: true,
+        rescueBranch: rescueBranch || null,
+        stashed,
+        stashRestored,
+        stashRef: stashRestored ? null : (stashRef || null),
+        autoCommitted,
+        autoCommitSha: autoCommitSha || null,
+        apiFallback: true,
+        changedFiles: fallback.changedFiles,
+        output: fallback.output,
+      };
+    } catch (error) {
+      apiFallbackError =
+        error instanceof Error ? error.message : "GitHub API fallback thất bại.";
+    }
+
     stashRestored = await restoreStash();
     throw new Error(
       [
         "GitHub push thất bại sau khi đã fetch/reconcile.",
-        `Local HEAD vẫn an toàn: ${localSha || originalLocalSha}`,
-        rescueBranch ? `Rescue branch: ${rescueBranch}` : "",
+        \`Local HEAD vẫn an toàn: \${localSha || originalLocalSha}\`,
+        rescueBranch ? \`Rescue branch: \${rescueBranch}\` : "",
         stashed
           ? (stashRestored
               ? "Các thay đổi chưa commit đã được khôi phục lại."
-              : `Các thay đổi chưa commit vẫn an toàn trong ${stashRef}.`)
+              : \`Các thay đổi chưa commit vẫn an toàn trong \${stashRef}.\`)
           : "",
-        (push.stderr || push.stdout || "").slice(-1800),
-      ].filter(Boolean).join("\n"),
+        \`Git CLI: \${(push.stderr || push.stdout || "").slice(-1200)}\`,
+        \`GitHub API fallback: \${apiFallbackError}\`,
+      ].filter(Boolean).join("\\n"),
     );
   }
 
