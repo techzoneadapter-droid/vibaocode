@@ -841,15 +841,15 @@ export async function pushWorkspaceHead(
       const refresh = await shell(
         sandbox,
         [
-          \`cd \${JSON.stringify(dir)}\`,
-          \`GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=\${JSON.stringify(authHeader)} fetch origin \${JSON.stringify(branch)} --depth=100\`,
+          `cd ${JSON.stringify(dir)}`,
+          `GIT_TERMINAL_PROMPT=0 git -c http.extraHeader=${JSON.stringify(authHeader)} fetch origin ${JSON.stringify(branch)} --depth=100`,
         ].join(" && "),
       );
 
       if (refresh.exitCode === 0) {
         await shell(
           sandbox,
-          \`cd \${JSON.stringify(dir)} && git reset --hard origin/\${JSON.stringify(branch)}\`,
+          `cd ${JSON.stringify(dir)} && git reset --hard origin/${JSON.stringify(branch)}`,
         );
       }
 
@@ -881,15 +881,15 @@ export async function pushWorkspaceHead(
     throw new Error(
       [
         "GitHub push thất bại sau khi đã fetch/reconcile.",
-        \`Local HEAD vẫn an toàn: \${localSha || originalLocalSha}\`,
-        rescueBranch ? \`Rescue branch: \${rescueBranch}\` : "",
+        `Local HEAD vẫn an toàn: ${localSha || originalLocalSha}`,
+        rescueBranch ? `Rescue branch: ${rescueBranch}` : "",
         stashed
           ? (stashRestored
               ? "Các thay đổi chưa commit đã được khôi phục lại."
-              : \`Các thay đổi chưa commit vẫn an toàn trong \${stashRef}.\`)
+              : `Các thay đổi chưa commit vẫn an toàn trong ${stashRef}.`)
           : "",
-        \`Git CLI: \${(push.stderr || push.stdout || "").slice(-1200)}\`,
-        \`GitHub API fallback: \${apiFallbackError}\`,
+        `Git CLI: ${(push.stderr || push.stdout || "").slice(-1200)}`,
+        `GitHub API fallback: ${apiFallbackError}`,
       ].filter(Boolean).join("\\n"),
     );
   }
