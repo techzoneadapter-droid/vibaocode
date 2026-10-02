@@ -2833,7 +2833,7 @@ export default function Workspace() {
               <button
                 className="primary-button"
                 onClick={dirty ? saveToGitHub : pushSandboxHead}
-                disabled={dirty ? saving : (!sandboxRunning || sandboxPushLoading)}
+                disabled={dirty ? saving : (!treeItems.length || sandboxPushLoading)}
                 title={dirty ? "Push file đang sửa" : "Push commit hiện tại trong Cloud Sandbox"}
                 type="button"
               >
@@ -3625,7 +3625,7 @@ export default function Workspace() {
                   </button>
                   <button
                     onClick={pushSandboxHead}
-                    disabled={!treeItems.length || sandboxPushLoading || !sandboxRunning}
+                    disabled={!treeItems.length || sandboxPushLoading}
                     type="button"
                   >
                     {sandboxPushLoading ? <Loader2 className="spin" size={14} /> : <Upload size={14} />}
