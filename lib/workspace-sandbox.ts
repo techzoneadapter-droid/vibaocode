@@ -467,9 +467,16 @@ export async function checkpointWorkspaceChanges(
     sandbox,
     [
       `cd ${JSON.stringify(dir)}`,
-      "git add -u",
-      "git add -A -- src public scripts tests .github index.html package.json package-lock.json tsconfig.json vite.config.ts README.md PROJECT.md VISUAL_SYSTEM.md .gitignore 2>/dev/null || true",
-      "git reset -- .vibaocode-* .vibaocode-references node_modules dist 2>/dev/null || true",
+      // Stage the complete project tree so new files created by Codex are not
+      // silently omitted. This is required for Expo/React Native projects where
+      // new routes/components commonly live under app/, components/, services/,
+      // hooks/, lib/, data/, types/, assets/, and supabase/.
+      "git add -A",
+      // Never checkpoint Vibaocode runtime state, dependency/build output, or
+      // local environment secrets. Re-add .env.example explicitly because the
+      // broad .env.* exclusion below would otherwise remove it from the index.
+      "git reset -- .vibaocode-* .vibaocode-references node_modules dist .expo web-build coverage .env .env.local .env.* 2>/dev/null || true",
+      "if [ -f .env.example ]; then git add -f .env.example; fi",
     ].join(" && "),
   );
   if (stage.exitCode !== 0) {
