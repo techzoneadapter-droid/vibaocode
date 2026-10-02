@@ -2089,6 +2089,24 @@ export default function Workspace() {
 
   async function askProjectAI() {
     if (!aiReady || aiScope !== "project") return;
+
+    const normalizedPrompt = prompt.trim().toLowerCase();
+    const pushOnlyRequest =
+      /^(final push only|push current local commits|push current commits|push sandbox|push to github|push current local commits to github now)/i.test(
+        prompt.trim(),
+      ) ||
+      (
+        normalizedPrompt.length <= 1200 &&
+        /push/.test(normalizedPrompt) &&
+        /(origin\/main|github|local commits|local head)/.test(normalizedPrompt) &&
+        !/(redesign|implement|build feature|fix ui|refactor|create|add feature|modify code)/.test(normalizedPrompt)
+      );
+
+    if (pushOnlyRequest) {
+      setNotice("Đang dùng GitHub token của Vibaocode để push trực tiếp • không gọi Codex");
+      await pushSandboxHead();
+      return;
+    }
     setAiLoading(true);
     setError("");
     setProjectProposals([]);
